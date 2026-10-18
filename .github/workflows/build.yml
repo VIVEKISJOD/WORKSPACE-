@@ -66,8 +66,8 @@ jobs:
                   applicationId = "dev.workspace.app"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 5
-                  versionName = "0.5"
+                  versionCode = 8
+                  versionName = "0.8"
               }
               signingConfigs {
                   getByName("debug") {
@@ -263,7 +263,10 @@ jobs:
               private val prefs: SharedPreferences,
               private val baseText: () -> String
           ) {
-              private class KeyInfo(val id: String, val label: String, val provider: String, val budget: Long)
+              private class KeyInfo(
+                  val id: String, val label: String, val provider: String, val budget: Long,
+                  val base: String = "", val model: String = ""
+              )
 
               // code: 0 finished, 1 try next model, 2 stop with error
               private class R(val code: Int, val msg: String = "", val quota: Boolean = false)
@@ -306,7 +309,8 @@ jobs:
                       out.add(
                           KeyInfo(
                               o.getString("id"), o.optString("label", "Key"),
-                              o.optString("provider", "gemini"), o.optLong("budget", 1000000L)
+                              o.optString("provider", "gemini"), o.optLong("budget", 1000000L),
+                              o.optString("base", ""), o.optString("model", "")
                           )
                       )
                   }
@@ -319,6 +323,7 @@ jobs:
                       a.put(
                           JSONObject().put("id", k.id).put("label", k.label)
                               .put("provider", k.provider).put("budget", k.budget)
+                              .put("base", k.base).put("model", k.model)
                       )
                   }
                   prefs.edit().putString("keys_meta", a.toString()).apply()
@@ -376,7 +381,7 @@ jobs:
 
               private fun looksDaily(msg: String): Boolean {
                   val s = msg.lowercase()
-                  return s.contains("perday") || s.contains("per day") || s.contains("daily")
+                  return s.contains("perday") || s.contains("per day") || s.contains("daily") || s.contains("credit")
               }
 
               // ---------- functions the page can call ----------
@@ -403,17 +408,32 @@ jobs:
               }
 
               @JavascriptInterface
-              fun addKey(provider: String, label: String, secret: String): Boolean {
+              fun addKey(provider: String, label: String, secret: String, base: String, model: String): Boolean {
                   val s = secret.trim()
-                  if (s.length < 20 || s.contains(" ")) return false
-                  if (provider != "gemini" && provider != "openrouter") return false
+                  if (s.length < 8 || s.contains(" ")) return false
+                  if (provider !in setOf("gemini", "claude", "openrouter", "groq", "mistral", "custom")) return false
+                  var b = base.trim()
+                  if (provider == "custom") {
+                      if (!b.startsWith("https://")) return false
+                      if (!b.endsWith("/")) b += "/"
+                  } else {
+                      b = ""
+                  }
                   return try {
                       val list = ArrayList<KeyInfo>(keys())
+                      val pname = when (provider) {
+                          "gemini" -> "Gemini"
+                          "claude" -> "Claude"
+                          "openrouter" -> "OpenRouter"
+                          "groq" -> "Groq"
+                          "mistral" -> "Mistral"
+                          else -> "Custom"
+                      }
                       val name = if (label.trim().isNotEmpty()) label.trim()
-                      else (if (provider == "gemini") "Gemini " else "OpenRouter ") + (list.count { it.provider == provider } + 1)
+                      else pname + " " + (list.count { it.provider == provider } + 1)
                       val id = "k" + System.currentTimeMillis()
                       Vault.put(prefs, id, s)
-                      list.add(KeyInfo(id, name, provider, 1000000L))
+                      list.add(KeyInfo(id, name, provider, 1000000L, b, model.trim()))
                       saveMeta(list)
                       if (list.size == 1) prefs.edit().putString("key_active", id).apply()
                       true
@@ -446,7 +466,7 @@ jobs:
               fun setBudget(id: String, n: String) {
                   val v = n.trim().toLongOrNull() ?: return
                   if (v <= 0L) return
-                  saveMeta(keys().map { if (it.id == id) KeyInfo(it.id, it.label, it.provider, v) else it })
+                  saveMeta(keys().map { if (it.id == id) KeyInfo(it.id, it.label, it.provider, v, it.base, it.model) else it })
               }
 
               @JavascriptInterface
@@ -671,8 +691,11 @@ jobs:
                       emit("model", k.label + " \u00B7 " + m.removePrefix("models/"), backup || i > 0)
                       lastTokens = 0
                       outChars = 0
-                      val r = if (k.provider == "gemini") streamGemini(secret, m, system, turns)
-                      else streamRouter(secret, m, system, turns)
+                      val r = when (k.provider) {
+                          "gemini" -> streamGemini(secret, m, system, turns)
+                          "claude" -> streamClaude(secret, m, system, turns)
+                          else -> streamRouter(k, secret, m, system, turns)
+                      }
                       if (r.code == 0) {
                           var chars = system.length
                           for (t in turns) chars += t.second.length
@@ -732,6 +755,13 @@ jobs:
               private fun ver(n: String): Double =
                   Regex("gemini-(\\d+(?:\\.\\d+)?)").find(n)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
 
+              private fun baseOf(k: KeyInfo): String = when (k.provider) {
+                  "openrouter" -> router
+                  "groq" -> "https://api.groq.com/openai/v1/"
+                  "mistral" -> "https://api.mistral.ai/v1/"
+                  else -> k.base
+              }
+
               private fun candidatesFor(k: KeyInfo, secret: String): List<String> {
                   val ck = "chat:" + k.id
                   modelCache[ck]?.let { return it }
@@ -760,7 +790,38 @@ jobs:
                           )
                       ).take(4)
                       result = if (sorted.isEmpty()) listOf("models/gemini-flash-latest") else sorted
-                  } else {
+                  } else if (k.model.isNotEmpty()) {
+                      result = listOf(k.model)
+                  } else if (k.provider == "claude") {
+                      val c = URL("https://api.anthropic.com/v1/models?limit=100").openConnection() as HttpURLConnection
+                      c.setRequestProperty("x-api-key", secret)
+                      c.setRequestProperty("anthropic-version", "2023-06-01")
+                      c.connectTimeout = 20000
+                      c.readTimeout = 30000
+                      val code = c.responseCode
+                      if (code != 200) {
+                          throw Exception("Anthropic refused the key (code " + code + "). Check the key and that it has credit.")
+                      }
+                      val txt = c.inputStream.bufferedReader().use { it.readText() }
+                      val arr = JSONObject(txt).optJSONArray("data") ?: JSONArray()
+                      val ids = ArrayList<String>()
+                      val made = ArrayList<String>()
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          val id = o.optString("id")
+                          if (id.isEmpty()) continue
+                          ids.add(id)
+                          made.add(o.optString("created_at", ""))
+                      }
+                      if (ids.isEmpty()) throw Exception("No Claude models found for this key.")
+                      fun fam(n: String): Int = if (n.contains("sonnet")) 0 else if (n.contains("haiku")) 1 else 2
+                      val sorted = ids.indices.sortedWith(Comparator { a, b ->
+                          val fa = fam(ids[a])
+                          val fb = fam(ids[b])
+                          if (fa != fb) fa - fb else made[b].compareTo(made[a])
+                      })
+                      result = sorted.take(3).map { ids[it] }
+                  } else if (k.provider == "openrouter") {
                       val c = URL(router + "models").openConnection() as HttpURLConnection
                       c.connectTimeout = 20000
                       c.readTimeout = 30000
@@ -784,6 +845,32 @@ jobs:
                       if (ids.isEmpty()) throw Exception("No free OpenRouter models found right now.")
                       val idx = ids.indices.sortedByDescending { ctxs[it] }.take(4)
                       result = idx.map { ids[it] }
+                  } else {
+                      val c = URL(baseOf(k) + "models").openConnection() as HttpURLConnection
+                      c.setRequestProperty("Authorization", "Bearer " + secret)
+                      c.connectTimeout = 20000
+                      c.readTimeout = 30000
+                      val code = c.responseCode
+                      if (code != 200) {
+                          throw Exception("Could not load the model list (code " + code + "). Check the key and web address, or type a model name when adding the key.")
+                      }
+                      val txt = c.inputStream.bufferedReader().use { it.readText() }
+                      val arr = JSONObject(txt).optJSONArray("data") ?: JSONArray()
+                      val bad = listOf(
+                          "whisper", "guard", "tts", "embed", "moderation", "ocr", "rerank",
+                          "image", "audio", "speech", "orpheus", "playai", "transcribe"
+                      )
+                      val ids = ArrayList<String>()
+                      val created = ArrayList<Long>()
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          val id = o.optString("id")
+                          if (id.isEmpty() || bad.any { id.lowercase().contains(it) }) continue
+                          ids.add(id)
+                          created.add(o.optLong("created", 0L))
+                      }
+                      if (ids.isEmpty()) throw Exception("No chat models found. Type a model name when adding the key.")
+                      result = ids.indices.sortedByDescending { created[it] }.take(4).map { ids[it] }
                   }
                   modelCache[ck] = result
                   return result
@@ -887,9 +974,107 @@ jobs:
                   }
               }
 
+              // ---------- streaming: Claude (Anthropic) ----------
+
+              private fun streamClaude(secret: String, model: String, system: String, turns: List<Pair<String, String>>): R {
+                  val messages = JSONArray()
+                  for (t in turns) {
+                      messages.put(
+                          JSONObject().put("role", if (t.first == "user") "user" else "assistant").put("content", t.second)
+                      )
+                  }
+                  val body = JSONObject()
+                      .put("model", model)
+                      .put("max_tokens", 8000)
+                      .put("system", system)
+                      .put("messages", messages)
+                      .put("stream", true)
+
+                  val c = URL("https://api.anthropic.com/v1/messages").openConnection() as HttpURLConnection
+                  conn = c
+                  c.requestMethod = "POST"
+                  c.doOutput = true
+                  c.connectTimeout = 20000
+                  c.readTimeout = 120000
+                  c.setRequestProperty("Content-Type", "application/json")
+                  c.setRequestProperty("x-api-key", secret)
+                  c.setRequestProperty("anthropic-version", "2023-06-01")
+                  var got = false
+                  var inTok = 0
+                  var outTok = 0
+                  var streamErr = ""
+                  try {
+                      c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                      val code = c.responseCode
+                      if (code != 200) {
+                          val err = try {
+                              c.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                          } catch (e: Exception) {
+                              ""
+                          }
+                          val msg = errMsg(err, code)
+                          val credit = msg.lowercase().contains("credit")
+                          val retry = credit || code == 403 || code == 404 || code == 429 || code == 529 || code >= 500
+                          return R(if (retry) 1 else 2, msg, code == 429 || credit)
+                      }
+                      c.inputStream.bufferedReader().use { r ->
+                          while (true) {
+                              if (stopFlag) break
+                              val line = r.readLine() ?: break
+                              if (!line.startsWith("data:")) continue
+                              val js = line.substring(5).trim()
+                              if (js.isEmpty()) continue
+                              val o = JSONObject(js)
+                              val type = o.optString("type", "")
+                              if (type == "content_block_delta") {
+                                  val d = o.optJSONObject("delta")
+                                  if (d != null && d.optString("type", "") == "text_delta" && !d.isNull("text")) {
+                                      val t = d.optString("text", "")
+                                      if (t.isNotEmpty()) {
+                                          got = true
+                                          outChars += t.length
+                                          emit("chunk", t)
+                                      }
+                                  }
+                              } else if (type == "message_start") {
+                                  inTok = o.optJSONObject("message")?.optJSONObject("usage")?.optInt("input_tokens", 0) ?: 0
+                              } else if (type == "message_delta") {
+                                  val ot = o.optJSONObject("usage")?.optInt("output_tokens", 0) ?: 0
+                                  if (ot > 0) outTok = ot
+                              } else if (type == "error") {
+                                  streamErr = o.optJSONObject("error")?.optString("message", "error") ?: "error"
+                                  break
+                              } else if (type == "message_stop") {
+                                  break
+                              }
+                          }
+                      }
+                      if (inTok + outTok > 0) lastTokens = inTok + outTok
+                      if (streamErr.isNotEmpty()) {
+                          if (!got) return R(1, streamErr)
+                          emit("error", "The connection dropped: " + streamErr)
+                          return R(0)
+                      }
+                      emit("done")
+                      return R(0)
+                  } catch (e: Exception) {
+                      if (stopFlag) {
+                          emit("done")
+                          return R(0)
+                      }
+                      if (got) {
+                          emit("error", "The connection dropped: " + (e.message ?: "unknown"))
+                          return R(0)
+                      }
+                      return R(1, e.message ?: "network problem")
+                  } finally {
+                      conn = null
+                  }
+              }
+
               // ---------- streaming: OpenRouter ----------
 
-              private fun streamRouter(secret: String, model: String, system: String, turns: List<Pair<String, String>>): R {
+              private fun streamRouter(k: KeyInfo, secret: String, model: String, system: String, turns: List<Pair<String, String>>): R {
                   val messages = JSONArray()
                   messages.put(JSONObject().put("role", "system").put("content", system))
                   for (t in turns) {
@@ -901,9 +1086,9 @@ jobs:
                       .put("model", model)
                       .put("messages", messages)
                       .put("stream", true)
-                      .put("stream_options", JSONObject().put("include_usage", true))
+                  if (k.provider == "openrouter") body.put("stream_options", JSONObject().put("include_usage", true))
 
-                  val c = URL(router + "chat/completions").openConnection() as HttpURLConnection
+                  val c = URL(baseOf(k) + "chat/completions").openConnection() as HttpURLConnection
                   conn = c
                   c.requestMethod = "POST"
                   c.doOutput = true
@@ -1172,8 +1357,10 @@ jobs:
               <label><input type="checkbox" id="auto"> Switch to the next key automatically when a limit hits</label>
               <div class="note">Percent left is an estimate. Providers do not tell apps how much free quota is left, so the app counts what you used today and compares it with the budget you set for each key. Keys are stored encrypted on this device and never uploaded.</div>
               <h3>Add a key</h3>
-              <select id="kp"><option value="gemini">Gemini (aistudio.google.com)</option><option value="openrouter">OpenRouter (openrouter.ai, free models)</option></select>
+              <select id="kp"><option value="gemini">Gemini (aistudio.google.com)</option><option value="claude">Claude API (console.anthropic.com, paid credit)</option><option value="openrouter">OpenRouter (openrouter.ai, free models)</option><option value="groq">Groq (console.groq.com)</option><option value="mistral">Mistral (console.mistral.ai)</option><option value="custom">Custom (any OpenAI-style service)</option></select>
               <input id="kl" placeholder="Name, for example Gemini 1 (optional)" autocomplete="off">
+              <input id="kb" placeholder="Web address, like https://api.example.com/v1" autocomplete="off" autocapitalize="off" hidden>
+              <input id="km" placeholder="Model name (optional, leave empty to pick automatically)" autocomplete="off" autocapitalize="off">
               <input id="kin" type="password" placeholder="Paste key here" autocomplete="off" autocapitalize="off" spellcheck="false">
               <button class="pri" id="kAdd">Add key</button>
               <div class="note" id="kMsg"></div>
@@ -1294,6 +1481,7 @@ jobs:
           /* ---------- keys and meter ---------- */
           function loadKeys(){ try{ KS = JSON.parse(N.keysJson()); }catch(e){} }
           function activeKey(){ for(var i = 0; i < KS.keys.length; i++) if(KS.keys[i].active) return KS.keys[i]; return null; }
+          function pname(p){ return {gemini: 'Gemini', claude: 'Claude', openrouter: 'OpenRouter', groq: 'Groq', mistral: 'Mistral', custom: 'Custom'}[p] || p; }
           function fmt(n){ return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n); }
           function updateMeter(){
             loadKeys();
@@ -1316,7 +1504,7 @@ jobs:
             $('auto').checked = !!KS.auto;
             KS.keys.forEach(function(k, i){
               var c = mk('div', 'kcard'), h = mk('div', 'kh');
-              h.appendChild(mk('span', '', k.label + ' \u00B7 ' + (k.provider === 'gemini' ? 'Gemini' : 'OpenRouter')));
+              h.appendChild(mk('span', '', k.label + ' \u00B7 ' + pname(k.provider)));
               if(k.active) h.appendChild(mk('span', 'tag on', 'In use'));
               c.appendChild(h);
               var bar = mk('div', 'bar'), f = mk('div', 'fill' + (k.pct <= 15 ? ' low' : ''));
@@ -1471,12 +1659,13 @@ jobs:
             $('tMeter').onclick = function(){ showKeys(true); };
             $('kClose').onclick = function(){ showKeys(false); };
             $('auto').onchange = function(){ N.setAuto(this.checked); };
+            $('kp').onchange = function(){ $('kb').hidden = this.value !== 'custom'; };
             $('kAdd').onclick = function(){
-              if(N.addKey($('kp').value, $('kl').value, $('kin').value)){
-                $('kin').value = ''; $('kl').value = ''; $('kMsg').textContent = ''; renderKeys(); showKeys(false);
+              if(N.addKey($('kp').value, $('kl').value, $('kin').value, $('kb').value, $('km').value)){
+                $('kin').value = ''; $('kl').value = ''; $('kb').value = ''; $('km').value = ''; $('kMsg').textContent = ''; renderKeys(); showKeys(false);
               } else {
                 $('kMsg').style.color = '#d97706';
-                $('kMsg').textContent = 'That does not look like a key. Copy it again and paste.';
+                $('kMsg').textContent = 'That does not look right. Check the key (and the web address for Custom).';
               }
             };
             showKeys(!N.hasKey());
@@ -1493,6 +1682,11 @@ jobs:
           import android.Manifest
           import android.app.Activity
           import android.app.AlertDialog
+          import android.app.Dialog
+          import android.content.BroadcastReceiver
+          import android.content.ContentValues
+          import android.content.Context
+          import android.content.IntentFilter
           import android.app.DownloadManager
           import android.content.ClipData
           import android.content.ClipboardManager
@@ -1504,6 +1698,10 @@ jobs:
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
+          import android.os.Message
+          import android.provider.MediaStore
+          import android.util.Base64
+          import android.webkit.MimeTypeMap
           import android.os.Environment
           import android.text.InputType
           import android.text.TextUtils
@@ -1529,6 +1727,8 @@ jobs:
           import android.widget.Toast
           import org.json.JSONObject
           import androidx.webkit.ProfileStore
+          import androidx.webkit.WebSettingsCompat
+          import androidx.webkit.WebMessageCompat
           import androidx.webkit.WebViewCompat
           import androidx.webkit.WebViewFeature
 
@@ -1643,6 +1843,12 @@ jobs:
                       prefs.edit().putBoolean("mig_chat", true).apply()
                   }
                   buildUi()
+                  val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      registerReceiver(dlReceiver, filter, Context.RECEIVER_EXPORTED)
+                  } else {
+                      registerReceiver(dlReceiver, filter)
+                  }
                   startKeepAlive()
                   showHome()
               }
@@ -1972,7 +2178,7 @@ jobs:
 
               private fun userAgent(): String =
                   if (desktopMode()) DESKTOP_UA
-                  else WebSettings.getDefaultUserAgent(this).replace("; wv", "")
+                  else WebSettings.getDefaultUserAgent(this).replace("; wv", "").replace("Version/4.0 ", "")
 
               // ---------- projects & sites ----------
 
@@ -2313,6 +2519,108 @@ jobs:
                   view.postDelayed({ view.evaluateJavascript(DESKTOP_JS, null) }, 700)
               }
 
+              private val dlUrls = HashMap<Long, String>()
+
+              private val dlReceiver = object : BroadcastReceiver() {
+                  override fun onReceive(context: Context?, intent: Intent?) {
+                      val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: return
+                      val url = dlUrls[id] ?: return
+                      dlUrls.remove(id)
+                      val dm = getSystemService(DownloadManager::class.java)
+                      val q = dm.query(DownloadManager.Query().setFilterById(id))
+                      if (q != null) {
+                          if (q.moveToFirst()) {
+                              val st = q.getInt(q.getColumnIndexOrThrow(DownloadManager.COLUMN_STATUS))
+                              if (st == DownloadManager.STATUS_FAILED) offerBrowser(url)
+                          }
+                          q.close()
+                      }
+                  }
+              }
+
+              private fun offerBrowser(url: String) {
+                  AlertDialog.Builder(this).setTitle("Download did not work")
+                      .setMessage("Open it in your browser instead?")
+                      .setPositiveButton("Open in browser") { _, _ ->
+                          try {
+                              startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                          } catch (e: Exception) {
+                              toast("No browser found")
+                          }
+                      }
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun receiveBlob(msg: String) {
+                  runOnUiThread {
+                      if (msg.startsWith("ERR|")) {
+                          toast("Download failed")
+                          return@runOnUiThread
+                      }
+                      val p = msg.split("|", limit = 3)
+                      if (p.size < 3) {
+                          toast("Download failed")
+                          return@runOnUiThread
+                      }
+                      try {
+                          saveToDownloads(p[0], Base64.decode(p[2], Base64.DEFAULT))
+                      } catch (e: Exception) {
+                          toast("Download failed")
+                      }
+                  }
+              }
+
+              private fun saveToDownloads(name: String, bytes: ByteArray) {
+                  val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                  if (Build.VERSION.SDK_INT < 29) {
+                      toast("Saving needs Android 10 or newer")
+                      return
+                  }
+                  try {
+                      val ext = safe.substringAfterLast('.', "").lowercase()
+                      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+                      val v = ContentValues()
+                      v.put(MediaStore.MediaColumns.DISPLAY_NAME, safe)
+                      v.put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                      v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                      val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
+                      if (uri == null) {
+                          toast("Could not save")
+                          return
+                      }
+                      contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                      toast("Saved in Downloads: " + safe)
+                  } catch (e: Exception) {
+                      toast("Could not save")
+                  }
+              }
+
+              // Sign-in pages (like "Continue with Google") open a pop-up window.
+              private fun makePopup(): WebView {
+                  val p = WebView(this)
+                  if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+                      try {
+                          WebViewCompat.setProfile(p, profileName())
+                      } catch (e: Exception) {
+                      }
+                  }
+                  p.settings.apply {
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      userAgentString = userAgent()
+                      javaScriptCanOpenWindowsAutomatically = true
+                  }
+                  if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                      try {
+                          WebSettingsCompat.setRequestedWithHeaderOriginAllowList(p.settings, emptySet())
+                      } catch (e: Exception) {
+                      }
+                  }
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(p, true)
+                  p.webViewClient = WebViewClient()
+                  return p
+              }
+
               private fun makeWebView(chat: Boolean): WebView {
                   val wv = WebView(this)
                   // Each project gets its own isolated cookies / storage / cache.
@@ -2330,9 +2638,17 @@ jobs:
                       userAgentString = userAgent()
                       useWideViewPort = desktopMode() && !chat
                       loadWithOverviewMode = desktopMode() && !chat
+                      javaScriptCanOpenWindowsAutomatically = true
+                      setSupportMultipleWindows(true)
                       setSupportZoom(true)
                       builtInZoomControls = true
                       displayZoomControls = false
+                  }
+                  if (WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                      try {
+                          WebSettingsCompat.setRequestedWithHeaderOriginAllowList(wv.settings, emptySet())
+                      } catch (e: Exception) {
+                      }
                   }
                   CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
                   wv.webViewClient = object : WebViewClient() {
@@ -2351,6 +2667,27 @@ jobs:
                       wv.addJavascriptInterface(ChatBridge(this, wv, project, prefs) { baseText() }, "Native")
                   }
                   wv.webChromeClient = object : WebChromeClient() {
+                      override fun onCreateWindow(
+                          view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?
+                      ): Boolean {
+                          val msg = resultMsg ?: return false
+                          val transport = msg.obj as? WebView.WebViewTransport ?: return false
+                          val popup = makePopup()
+                          val d = Dialog(this@MainActivity, android.R.style.Theme_DeviceDefault_NoActionBar)
+                          popup.webChromeClient = object : WebChromeClient() {
+                              override fun onCloseWindow(window: WebView?) {
+                                  d.dismiss()
+                              }
+                          }
+                          d.setContentView(popup)
+                          d.setOnDismissListener { popup.destroy() }
+                          d.show()
+                          d.window?.setLayout(MATCH, MATCH)
+                          transport.webView = popup
+                          msg.sendToTarget()
+                          return true
+                      }
+
                       override fun onShowFileChooser(
                           webView: WebView?,
                           callback: ValueCallback<Array<Uri>>?,
@@ -2375,19 +2712,48 @@ jobs:
                           }
                       }
                   }
-                  wv.setDownloadListener { url, ua, cd, mime, _ ->
+                  if (!chat && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)) {
                       try {
-                          val name = URLUtil.guessFileName(url, cd, mime)
-                          val req = DownloadManager.Request(Uri.parse(url))
-                          req.setMimeType(mime)
-                          req.addRequestHeader("Cookie", cookiesFor(url))
-                          req.addRequestHeader("User-Agent", ua)
-                          req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                          req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-                          getSystemService(DownloadManager::class.java).enqueue(req)
-                          toast("Downloading $name (see Downloads)")
+                          // Lets the Claude site hand over files it builds in the page (blob links).
+                          WebViewCompat.addWebMessageListener(
+                              wv, "WsDl", setOf("https://claude.ai")
+                          ) { _, message: WebMessageCompat, _, _, _ ->
+                              receiveBlob(message.data ?: "")
+                          }
                       } catch (e: Exception) {
-                          toast("Download failed")
+                      }
+                  }
+                  wv.setDownloadListener { url, ua, cd, mime, _ ->
+                      val name = URLUtil.guessFileName(url, cd, mime)
+                      try {
+                          if (url.startsWith("blob:")) {
+                              val js = "(function(){var u=" + JSONObject.quote(url) + ";var n=" + JSONObject.quote(name) +
+                                  ";fetch(u).then(function(r){return r.blob()}).then(function(b){" +
+                                  "var f=new FileReader();f.onloadend=function(){var d=String(f.result);" +
+                                  "window.WsDl.postMessage(n+'|'+(b.type||'')+'|'+d.substring(d.indexOf(',')+1));};" +
+                                  "f.readAsDataURL(b);}).catch(function(e){window.WsDl.postMessage('ERR|'+e);});})();"
+                              wv.evaluateJavascript(js, null)
+                              toast("Preparing " + name + "...")
+                          } else if (url.startsWith("data:")) {
+                              val comma = url.indexOf(',')
+                              val meta = url.substring(5, comma)
+                              val data = url.substring(comma + 1)
+                              val bytes = if (meta.contains(";base64")) Base64.decode(data, Base64.DEFAULT)
+                              else Uri.decode(data).toByteArray(Charsets.UTF_8)
+                              saveToDownloads(name, bytes)
+                          } else {
+                              val req = DownloadManager.Request(Uri.parse(url))
+                              req.setMimeType(mime)
+                              req.addRequestHeader("Cookie", cookiesFor(url))
+                              req.addRequestHeader("User-Agent", ua)
+                              req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                              req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+                              val id = getSystemService(DownloadManager::class.java).enqueue(req)
+                              dlUrls[id] = url
+                              toast("Downloading $name (see Downloads)")
+                          }
+                      } catch (e: Exception) {
+                          if (url.startsWith("http")) offerBrowser(url) else toast("Download failed")
                       }
                   }
                   return wv
@@ -2435,6 +2801,14 @@ jobs:
                       requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
                   }
                   startForegroundService(Intent(this, KeepAliveService::class.java))
+              }
+
+              override fun onDestroy() {
+                  try {
+                      unregisterReceiver(dlReceiver)
+                  } catch (e: Exception) {
+                  }
+                  super.onDestroy()
               }
 
               @Deprecated("Deprecated in Java")
