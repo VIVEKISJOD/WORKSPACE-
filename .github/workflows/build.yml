@@ -18,7 +18,7 @@ jobs:
 
       - name: Generate the Android project
         run: |
-          mkdir -p app/src/main/java/dev/workspace
+          mkdir -p app/src/main/java/dev/workspace app/src/main/assets
 
           cat > settings.gradle.kts <<'EOF'
           pluginManagement {
@@ -66,8 +66,8 @@ jobs:
                   applicationId = "dev.workspace.app"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 3
-                  versionName = "0.3"
+                  versionCode = 5
+                  versionName = "0.5"
               }
               signingConfigs {
                   getByName("debug") {
@@ -173,6 +173,1320 @@ jobs:
           }
           EOF
 
+          cat > app/src/main/java/dev/workspace/Chat.kt <<'EOF'
+          package dev.workspace
+
+          import android.app.Activity
+          import android.content.ClipData
+          import android.content.ClipboardManager
+          import android.content.ContentValues
+          import android.content.SharedPreferences
+          import android.os.Build
+          import android.os.Environment
+          import android.provider.MediaStore
+          import android.security.keystore.KeyGenParameterSpec
+          import android.security.keystore.KeyProperties
+          import android.util.Base64
+          import android.webkit.JavascriptInterface
+          import android.webkit.MimeTypeMap
+          import android.webkit.WebView
+          import android.widget.Toast
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.net.HttpURLConnection
+          import java.net.URL
+          import java.security.KeyStore
+          import java.text.SimpleDateFormat
+          import java.util.Calendar
+          import java.util.Date
+          import java.util.Locale
+          import java.util.TimeZone
+          import javax.crypto.Cipher
+          import javax.crypto.KeyGenerator
+          import javax.crypto.SecretKey
+          import javax.crypto.spec.GCMParameterSpec
+
+          // Keys are encrypted with a key that lives inside the phone's secure keystore.
+          object Vault {
+              private const val ALIAS = "ws_vault"
+
+              private fun secret(): SecretKey {
+                  val ks = KeyStore.getInstance("AndroidKeyStore")
+                  ks.load(null)
+                  val existing = ks.getKey(ALIAS, null)
+                  if (existing is SecretKey) return existing
+                  val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+                  kg.init(
+                      KeyGenParameterSpec.Builder(
+                          ALIAS,
+                          KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                      )
+                          .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                          .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                          .build()
+                  )
+                  return kg.generateKey()
+              }
+
+              fun put(prefs: SharedPreferences, name: String, value: String) {
+                  val c = Cipher.getInstance("AES/GCM/NoPadding")
+                  c.init(Cipher.ENCRYPT_MODE, secret())
+                  val enc = c.doFinal(value.toByteArray(Charsets.UTF_8))
+                  val packed = Base64.encodeToString(c.iv, Base64.NO_WRAP) + ":" +
+                      Base64.encodeToString(enc, Base64.NO_WRAP)
+                  prefs.edit().putString("vault_" + name, packed).apply()
+              }
+
+              fun get(prefs: SharedPreferences, name: String): String? {
+                  val s = prefs.getString("vault_" + name, null) ?: return null
+                  return try {
+                      val iv = Base64.decode(s.substringBefore(":"), Base64.NO_WRAP)
+                      val enc = Base64.decode(s.substringAfter(":"), Base64.NO_WRAP)
+                      val c = Cipher.getInstance("AES/GCM/NoPadding")
+                      c.init(Cipher.DECRYPT_MODE, secret(), GCMParameterSpec(128, iv))
+                      String(c.doFinal(enc), Charsets.UTF_8)
+                  } catch (e: Exception) {
+                      null
+                  }
+              }
+
+              fun remove(prefs: SharedPreferences, name: String) {
+                  prefs.edit().remove("vault_" + name).apply()
+              }
+          }
+
+          // Connects the chat page (HTML) to the AI providers. Keys never go into the page.
+          class ChatBridge(
+              private val act: Activity,
+              private val wv: WebView,
+              private val project: String,
+              private val prefs: SharedPreferences,
+              private val baseText: () -> String
+          ) {
+              private class KeyInfo(val id: String, val label: String, val provider: String, val budget: Long)
+
+              // code: 0 finished, 1 try next model, 2 stop with error
+              private class R(val code: Int, val msg: String = "", val quota: Boolean = false)
+
+              @Volatile private var stopFlag = false
+              @Volatile private var conn: HttpURLConnection? = null
+              private val modelCache = HashMap<String, List<String>>()
+              private var lastTokens = 0
+              private var outChars = 0
+              private val gem = "https://generativelanguage.googleapis.com/v1beta/"
+              private val router = "https://openrouter.ai/api/v1/"
+
+              // ---------- keys, usage, limits ----------
+
+              private fun migrate() {
+                  if (prefs.getString("keys_meta", null) != null) return
+                  val arr = JSONArray()
+                  val old = Vault.get(prefs, "gemini")
+                  if (old != null) {
+                      Vault.put(prefs, "k1", old)
+                      Vault.remove(prefs, "gemini")
+                      arr.put(
+                          JSONObject().put("id", "k1").put("label", "Gemini 1")
+                              .put("provider", "gemini").put("budget", 1000000L)
+                      )
+                  }
+                  prefs.edit().putString("keys_meta", arr.toString()).apply()
+              }
+
+              private fun keys(): List<KeyInfo> {
+                  migrate()
+                  val a = try {
+                      JSONArray(prefs.getString("keys_meta", "[]"))
+                  } catch (e: Exception) {
+                      JSONArray()
+                  }
+                  val out = ArrayList<KeyInfo>()
+                  for (i in 0 until a.length()) {
+                      val o = a.getJSONObject(i)
+                      out.add(
+                          KeyInfo(
+                              o.getString("id"), o.optString("label", "Key"),
+                              o.optString("provider", "gemini"), o.optLong("budget", 1000000L)
+                          )
+                      )
+                  }
+                  return out
+              }
+
+              private fun saveMeta(list: List<KeyInfo>) {
+                  val a = JSONArray()
+                  for (k in list) {
+                      a.put(
+                          JSONObject().put("id", k.id).put("label", k.label)
+                              .put("provider", k.provider).put("budget", k.budget)
+                      )
+                  }
+                  prefs.edit().putString("keys_meta", a.toString()).apply()
+              }
+
+              private fun activeId(list: List<KeyInfo>): String? {
+                  val a = prefs.getString("key_active", null)
+                  if (a != null && list.any { it.id == a }) return a
+                  return list.firstOrNull()?.id
+              }
+
+              private fun ordered(list: List<KeyInfo>): List<KeyInfo> {
+                  val a = activeId(list)
+                  val first = list.filter { it.id == a }
+                  return first + list.filter { it.id != a }
+              }
+
+              private fun today(): String {
+                  val f = SimpleDateFormat("yyyy-MM-dd", Locale.US)
+                  f.timeZone = TimeZone.getTimeZone("America/Los_Angeles")
+                  return f.format(Date())
+              }
+
+              private fun usage(id: String): LongArray {
+                  val p = (prefs.getString("use_" + id, "") ?: "").split("|")
+                  if (p.size == 3 && p[0] == today()) {
+                      return longArrayOf(p[1].toLongOrNull() ?: 0L, p[2].toLongOrNull() ?: 0L)
+                  }
+                  return longArrayOf(0L, 0L)
+              }
+
+              private fun addUsage(id: String, tokens: Long) {
+                  val u = usage(id)
+                  prefs.edit().putString("use_" + id, today() + "|" + (u[0] + tokens) + "|" + (u[1] + 1)).apply()
+              }
+
+              private fun exhaustedUntil(id: String): Long = prefs.getLong("ex_" + id, 0L)
+
+              private fun isExhausted(id: String): Boolean = exhaustedUntil(id) > System.currentTimeMillis()
+
+              private fun nextMidnightPacific(): Long {
+                  val cal = Calendar.getInstance(TimeZone.getTimeZone("America/Los_Angeles"))
+                  cal.add(Calendar.DAY_OF_YEAR, 1)
+                  cal.set(Calendar.HOUR_OF_DAY, 0)
+                  cal.set(Calendar.MINUTE, 0)
+                  cal.set(Calendar.SECOND, 0)
+                  cal.set(Calendar.MILLISECOND, 0)
+                  return cal.timeInMillis
+              }
+
+              private fun markExhausted(id: String, daily: Boolean) {
+                  val until = if (daily) nextMidnightPacific() else System.currentTimeMillis() + 90000L
+                  prefs.edit().putLong("ex_" + id, until).apply()
+              }
+
+              private fun looksDaily(msg: String): Boolean {
+                  val s = msg.lowercase()
+                  return s.contains("perday") || s.contains("per day") || s.contains("daily")
+              }
+
+              // ---------- functions the page can call ----------
+
+              @JavascriptInterface
+              fun hasKey(): Boolean = keys().isNotEmpty()
+
+              @JavascriptInterface
+              fun keysJson(): String {
+                  val list = keys()
+                  val act = activeId(list)
+                  val arr = JSONArray()
+                  for (k in list) {
+                      val u = usage(k.id)
+                      val left = if (k.budget > 0) Math.max(0L, 100L - (u[0] * 100L / k.budget)) else 100L
+                      arr.put(
+                          JSONObject().put("id", k.id).put("label", k.label).put("provider", k.provider)
+                              .put("budget", k.budget).put("used", u[0]).put("reqs", u[1]).put("pct", left)
+                              .put("exhausted", isExhausted(k.id)).put("until", exhaustedUntil(k.id))
+                              .put("active", k.id == act)
+                      )
+                  }
+                  return JSONObject().put("keys", arr).put("auto", prefs.getBoolean("autoContinue", false)).toString()
+              }
+
+              @JavascriptInterface
+              fun addKey(provider: String, label: String, secret: String): Boolean {
+                  val s = secret.trim()
+                  if (s.length < 20 || s.contains(" ")) return false
+                  if (provider != "gemini" && provider != "openrouter") return false
+                  return try {
+                      val list = ArrayList<KeyInfo>(keys())
+                      val name = if (label.trim().isNotEmpty()) label.trim()
+                      else (if (provider == "gemini") "Gemini " else "OpenRouter ") + (list.count { it.provider == provider } + 1)
+                      val id = "k" + System.currentTimeMillis()
+                      Vault.put(prefs, id, s)
+                      list.add(KeyInfo(id, name, provider, 1000000L))
+                      saveMeta(list)
+                      if (list.size == 1) prefs.edit().putString("key_active", id).apply()
+                      true
+                  } catch (e: Exception) {
+                      false
+                  }
+              }
+
+              @JavascriptInterface
+              fun removeKey(id: String) {
+                  val list = keys().filter { it.id != id }
+                  saveMeta(list)
+                  Vault.remove(prefs, id)
+                  prefs.edit().remove("use_" + id).remove("ex_" + id).apply()
+              }
+
+              @JavascriptInterface
+              fun moveKey(id: String, dir: Int) {
+                  val list = ArrayList<KeyInfo>(keys())
+                  val i = list.indexOfFirst { it.id == id }
+                  val j = i + dir
+                  if (i < 0 || j < 0 || j >= list.size) return
+                  val t = list[i]
+                  list[i] = list[j]
+                  list[j] = t
+                  saveMeta(list)
+              }
+
+              @JavascriptInterface
+              fun setBudget(id: String, n: String) {
+                  val v = n.trim().toLongOrNull() ?: return
+                  if (v <= 0L) return
+                  saveMeta(keys().map { if (it.id == id) KeyInfo(it.id, it.label, it.provider, v) else it })
+              }
+
+              @JavascriptInterface
+              fun setActive(id: String) {
+                  val list = keys()
+                  if (activeId(list) != id) {
+                      prefs.edit().putString("key_active", id).putBoolean("handoff_next", true).apply()
+                  }
+              }
+
+              @JavascriptInterface
+              fun setAuto(b: Boolean) {
+                  prefs.edit().putBoolean("autoContinue", b).apply()
+              }
+
+              @JavascriptInterface
+              fun theme(): String = prefs.getString("theme", "dark") ?: "dark"
+
+              @JavascriptInterface
+              fun fontScale(): String = (prefs.getString("fontScale", "1.0") ?: "1.0")
+
+              @JavascriptInterface
+              fun loadHistory(): String = prefs.getString("hist_" + project, "[]") ?: "[]"
+
+              @JavascriptInterface
+              fun saveHistory(json: String) {
+                  prefs.edit().putString("hist_" + project, json).apply()
+              }
+
+              @JavascriptInterface
+              fun copy(t: String) {
+                  act.runOnUiThread {
+                      val cb = act.getSystemService(ClipboardManager::class.java)
+                      cb.setPrimaryClip(ClipData.newPlainText("code", t))
+                      Toast.makeText(act, "Copied", Toast.LENGTH_SHORT).show()
+                  }
+              }
+
+              @JavascriptInterface
+              fun saveFile(name: String, data: String, isBase64: Boolean): Boolean {
+                  val safe = name.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                  if (Build.VERSION.SDK_INT < 29) {
+                      toast("Saving files needs Android 10 or newer. Use Copy instead.")
+                      return false
+                  }
+                  try {
+                      val ext = safe.substringAfterLast('.', "").lowercase()
+                      val mime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+                      val v = ContentValues()
+                      v.put(MediaStore.MediaColumns.DISPLAY_NAME, safe)
+                      v.put(MediaStore.MediaColumns.MIME_TYPE, mime)
+                      v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                      val uri = act.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v)
+                      if (uri == null) {
+                          toast("Could not save")
+                          return false
+                      }
+                      val bytes = if (isBase64) Base64.decode(data, Base64.DEFAULT) else data.toByteArray(Charsets.UTF_8)
+                      act.contentResolver.openOutputStream(uri)?.use { it.write(bytes) }
+                      toast("Saved in Downloads: " + safe)
+                      return true
+                  } catch (e: Exception) {
+                      toast("Could not save")
+                      return false
+                  }
+              }
+
+              @JavascriptInterface
+              fun stop() {
+                  stopFlag = true
+                  try {
+                      conn?.disconnect()
+                  } catch (e: Exception) {
+                  }
+              }
+
+              @JavascriptInterface
+              fun send(payload: String) {
+                  stopFlag = false
+                  Thread {
+                      try {
+                          runChat(payload)
+                      } catch (e: Exception) {
+                          if (stopFlag) emit("done") else emit("error", "Something went wrong: " + (e.message ?: "unknown"))
+                      }
+                  }.start()
+              }
+
+              private fun toast(t: String) {
+                  act.runOnUiThread { Toast.makeText(act, t, Toast.LENGTH_SHORT).show() }
+              }
+
+              private fun emitRaw(ev: JSONObject) {
+                  act.runOnUiThread {
+                      try {
+                          wv.evaluateJavascript("window.onNative(" + JSONObject.quote(ev.toString()) + ")", null)
+                      } catch (e: Exception) {
+                      }
+                  }
+              }
+
+              private fun emit(type: String, text: String = "", flag: Boolean = false) {
+                  emitRaw(JSONObject().put("type", type).put("text", text).put("flag", flag))
+              }
+
+              // ---------- prompts ----------
+
+              private fun roleText(role: String): String = when (role) {
+                  "prompt" -> "ROLE /prompt: Write or improve prompts for AI tools. Give the final prompt in one code block, then at most two short lines on what you changed."
+                  "code" -> "ROLE /code: Build or fix code. Return every file complete and ready to upload, one file per code block, with the filename right above each block, and say where each file goes."
+                  "fix" -> "ROLE /fix: The user pastes an error or says what is broken. Say the cause in one or two plain lines, then return corrected, complete files ready to upload, one per code block with its filename."
+                  "deploy" -> "ROLE /deploy: Give exact tap-by-tap steps, with no commands and no terminal, to publish this project on GitHub Pages or Cloudflare from an Android tablet browser. Number the steps."
+                  "explain" -> "ROLE /explain: Explain the given code or file in simple words. Keep it short and avoid jargon."
+                  else -> ""
+              }
+
+              private fun buildSystem(role: String, handoff: Boolean, files: List<String>): String {
+                  val parts = ArrayList<String>()
+                  val b = baseText().trim()
+                  if (b.isNotEmpty()) parts.add(b)
+                  val extra = (prefs.getString("bp_" + project, "") ?: "").trim()
+                  if (extra.isNotEmpty()) parts.add("Extra rules for this project:\n" + extra)
+                  val r = roleText(role)
+                  if (r.isNotEmpty()) parts.add(r)
+                  if (handoff) {
+                      var h = "HANDOFF: You are taking over this project mid-way because the previous account reached its limit. " +
+                          "Keep following all the rules above, continue exactly where the last message stopped, " +
+                          "and do not restart or re-ask things that are already settled.\nProject: " + project
+                      if (files.isNotEmpty()) h += "\nFiles created so far: " + files.joinToString(", ")
+                      parts.add(h)
+                  }
+                  return parts.joinToString("\n\n")
+              }
+
+              // ---------- main flow ----------
+
+              private fun runChat(payload: String) {
+                  val p = JSONObject(payload)
+                  val list = keys()
+                  if (list.isEmpty()) {
+                      emit("error", "Add a key first.")
+                      return
+                  }
+                  if (p.optString("mode", "chat") == "image") {
+                      runImage(p.optString("prompt", ""))
+                      return
+                  }
+                  val role = p.optString("role", "")
+                  val handoff = p.optBoolean("handoff", false) || prefs.getBoolean("handoff_next", false)
+                  prefs.edit().putBoolean("handoff_next", false).apply()
+
+                  val turns = ArrayList<Pair<String, String>>()
+                  val ms = p.getJSONArray("messages")
+                  for (i in 0 until ms.length()) {
+                      val m = ms.getJSONObject(i)
+                      turns.add(Pair(if (m.getString("role") == "user") "user" else "model", m.getString("text")))
+                  }
+                  val files = ArrayList<String>()
+                  val fa = p.optJSONArray("files")
+                  if (fa != null) for (i in 0 until fa.length()) files.add(fa.getString(i))
+
+                  val auto = prefs.getBoolean("autoContinue", false)
+                  val order = ordered(list).filter { !isExhausted(it.id) }
+                  if (order.isEmpty()) {
+                      emit("error", "All your keys are at their limit right now. Try later or add another key.")
+                      return
+                  }
+                  var useHandoff = handoff
+                  for ((idx, k) in order.withIndex()) {
+                      if (stopFlag) {
+                          emit("done")
+                          return
+                      }
+                      if (idx > 0) {
+                          useHandoff = true
+                          emit("switched", k.label)
+                      }
+                      prefs.edit().putString("key_active", k.id).apply()
+                      val res = tryKey(k, role, turns, useHandoff, files, idx > 0)
+                      if (res != 1) return
+                      // This key hit its limit.
+                      val next = order.getOrNull(idx + 1)
+                      if (next == null) {
+                          emit("error", k.label + " hit its limit and there is no backup key left. Add another key in Keys.")
+                          return
+                      }
+                      if (!auto) {
+                          emitRaw(
+                              JSONObject().put("type", "limit").put("text", k.label)
+                                  .put("nextId", next.id).put("nextLabel", next.label)
+                          )
+                          return
+                      }
+                  }
+              }
+
+              // 0 = finished (done or error already sent), 1 = key hit its limit, 2 = error already sent
+              private fun tryKey(
+                  k: KeyInfo, role: String, turns: List<Pair<String, String>>,
+                  handoff: Boolean, files: List<String>, backup: Boolean
+              ): Int {
+                  val secret = Vault.get(prefs, k.id)
+                  if (secret == null) {
+                      emit("error", k.label + ": the key could not be read. Remove it and add it again.")
+                      return 2
+                  }
+                  val system = buildSystem(role, handoff, files)
+                  val cands = try {
+                      candidatesFor(k, secret)
+                  } catch (e: Exception) {
+                      emit("error", k.label + ": " + (e.message ?: "could not connect"))
+                      return 2
+                  }
+                  var sawQuota = false
+                  var daily = false
+                  var lastErr = ""
+                  for ((i, m) in cands.withIndex()) {
+                      if (stopFlag) {
+                          emit("done")
+                          return 0
+                      }
+                      emit("model", k.label + " \u00B7 " + m.removePrefix("models/"), backup || i > 0)
+                      lastTokens = 0
+                      outChars = 0
+                      val r = if (k.provider == "gemini") streamGemini(secret, m, system, turns)
+                      else streamRouter(secret, m, system, turns)
+                      if (r.code == 0) {
+                          var chars = system.length
+                          for (t in turns) chars += t.second.length
+                          val tokens = if (lastTokens > 0) lastTokens.toLong() else ((chars + outChars) / 4).toLong()
+                          addUsage(k.id, tokens)
+                          return 0
+                      }
+                      if (r.code == 2) {
+                          emit("error", k.label + ": " + r.msg)
+                          return 2
+                      }
+                      lastErr = r.msg
+                      if (r.quota) {
+                          sawQuota = true
+                          if (looksDaily(r.msg)) daily = true
+                      }
+                  }
+                  if (sawQuota) {
+                      markExhausted(k.id, daily)
+                      return 1
+                  }
+                  emit("error", "Every model on " + k.label + " failed. Last message: " + lastErr)
+                  return 2
+              }
+
+              // ---------- model lists ----------
+
+              private fun errMsg(txt: String, code: Int): String {
+                  return try {
+                      JSONObject(txt).getJSONObject("error").getString("message")
+                  } catch (e: Exception) {
+                      "HTTP " + code
+                  }
+              }
+
+              private fun geminiList(secret: String): JSONArray {
+                  val c = URL(gem + "models?pageSize=200").openConnection() as HttpURLConnection
+                  c.setRequestProperty("x-goog-api-key", secret)
+                  c.connectTimeout = 20000
+                  c.readTimeout = 30000
+                  val code = c.responseCode
+                  if (code != 200) {
+                      throw Exception("Google refused the key (code " + code + "). Check the key or make a new one.")
+                  }
+                  val txt = c.inputStream.bufferedReader().use { it.readText() }
+                  return JSONObject(txt).optJSONArray("models") ?: JSONArray()
+              }
+
+              private fun canGenerate(o: JSONObject): Boolean {
+                  val methods = o.optJSONArray("supportedGenerationMethods") ?: return false
+                  for (j in 0 until methods.length()) {
+                      if (methods.getString(j) == "generateContent") return true
+                  }
+                  return false
+              }
+
+              private fun ver(n: String): Double =
+                  Regex("gemini-(\\d+(?:\\.\\d+)?)").find(n)?.groupValues?.get(1)?.toDoubleOrNull() ?: 0.0
+
+              private fun candidatesFor(k: KeyInfo, secret: String): List<String> {
+                  val ck = "chat:" + k.id
+                  modelCache[ck]?.let { return it }
+                  val result: List<String>
+                  if (k.provider == "gemini") {
+                      val arr = geminiList(secret)
+                      val bad = listOf(
+                          "image", "tts", "audio", "live", "embedding", "robotics",
+                          "computer", "vision", "learnlm", "gemma", "exp", "thinking"
+                      )
+                      val found = ArrayList<String>()
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          val name = o.optString("name")
+                          if (!canGenerate(o)) continue
+                          if (!name.contains("gemini") || !name.contains("flash")) continue
+                          if (bad.any { name.contains(it) }) continue
+                          found.add(name)
+                      }
+                      val sorted = found.sortedWith(
+                          compareBy<String>(
+                              { it.contains("preview") },
+                              { -ver(it) },
+                              { it.contains("lite") },
+                              { it.length }
+                          )
+                      ).take(4)
+                      result = if (sorted.isEmpty()) listOf("models/gemini-flash-latest") else sorted
+                  } else {
+                      val c = URL(router + "models").openConnection() as HttpURLConnection
+                      c.connectTimeout = 20000
+                      c.readTimeout = 30000
+                      val code = c.responseCode
+                      if (code != 200) throw Exception("Could not load the OpenRouter model list (code " + code + ").")
+                      val txt = c.inputStream.bufferedReader().use { it.readText() }
+                      val arr = JSONObject(txt).optJSONArray("data") ?: JSONArray()
+                      val ids = ArrayList<String>()
+                      val ctxs = ArrayList<Int>()
+                      for (i in 0 until arr.length()) {
+                          val o = arr.getJSONObject(i)
+                          val id = o.optString("id")
+                          val pr = o.optJSONObject("pricing") ?: continue
+                          val a = pr.optString("prompt", "1").toDoubleOrNull() ?: 1.0
+                          val b = pr.optString("completion", "1").toDoubleOrNull() ?: 1.0
+                          if (a != 0.0 || b != 0.0) continue
+                          if (!id.endsWith(":free")) continue
+                          ids.add(id)
+                          ctxs.add(o.optInt("context_length", 0))
+                      }
+                      if (ids.isEmpty()) throw Exception("No free OpenRouter models found right now.")
+                      val idx = ids.indices.sortedByDescending { ctxs[it] }.take(4)
+                      result = idx.map { ids[it] }
+                  }
+                  modelCache[ck] = result
+                  return result
+              }
+
+              // ---------- streaming: Gemini ----------
+
+              private fun streamGemini(secret: String, model: String, system: String, turns: List<Pair<String, String>>): R {
+                  val contents = JSONArray()
+                  for (t in turns) {
+                      contents.put(
+                          JSONObject().put("role", t.first).put(
+                              "parts", JSONArray().put(JSONObject().put("text", t.second))
+                          )
+                      )
+                  }
+                  val body = JSONObject()
+                      .put(
+                          "system_instruction",
+                          JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system)))
+                      )
+                      .put("contents", contents)
+
+                  val c = URL(gem + model + ":streamGenerateContent?alt=sse").openConnection() as HttpURLConnection
+                  conn = c
+                  c.requestMethod = "POST"
+                  c.doOutput = true
+                  c.connectTimeout = 20000
+                  c.readTimeout = 120000
+                  c.setRequestProperty("Content-Type", "application/json")
+                  c.setRequestProperty("x-goog-api-key", secret)
+                  var got = false
+                  var blocked = false
+                  try {
+                      c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                      val code = c.responseCode
+                      if (code != 200) {
+                          val err = try {
+                              c.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                          } catch (e: Exception) {
+                              ""
+                          }
+                          val retry = code == 403 || code == 404 || code == 429 || code >= 500
+                          return R(if (retry) 1 else 2, errMsg(err, code), code == 429)
+                      }
+                      c.inputStream.bufferedReader().use { r ->
+                          while (true) {
+                              if (stopFlag) break
+                              val line = r.readLine() ?: break
+                              if (!line.startsWith("data:")) continue
+                              val js = line.substring(5).trim()
+                              if (js.isEmpty()) continue
+                              val o = JSONObject(js)
+                              val um = o.optJSONObject("usageMetadata")
+                              if (um != null) {
+                                  val tt = um.optInt("totalTokenCount", 0)
+                                  if (tt > 0) lastTokens = tt
+                              }
+                              val cands = o.optJSONArray("candidates")
+                              if (cands == null || cands.length() == 0) {
+                                  if (o.has("promptFeedback") && !got) {
+                                      blocked = true
+                                      break
+                                  }
+                                  continue
+                              }
+                              val parts = cands.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts")
+                              if (parts != null) {
+                                  for (j in 0 until parts.length()) {
+                                      val pt = parts.getJSONObject(j)
+                                      if (pt.optBoolean("thought", false)) continue
+                                      if (pt.isNull("text")) continue
+                                      val t = pt.optString("text", "")
+                                      if (t.isNotEmpty()) {
+                                          got = true
+                                          outChars += t.length
+                                          emit("chunk", t)
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      if (blocked) {
+                          emit("error", "Google's safety filter blocked this message.")
+                          return R(0)
+                      }
+                      emit("done")
+                      return R(0)
+                  } catch (e: Exception) {
+                      if (stopFlag) {
+                          emit("done")
+                          return R(0)
+                      }
+                      if (got) {
+                          emit("error", "The connection dropped: " + (e.message ?: "unknown"))
+                          return R(0)
+                      }
+                      return R(1, e.message ?: "network problem")
+                  } finally {
+                      conn = null
+                  }
+              }
+
+              // ---------- streaming: OpenRouter ----------
+
+              private fun streamRouter(secret: String, model: String, system: String, turns: List<Pair<String, String>>): R {
+                  val messages = JSONArray()
+                  messages.put(JSONObject().put("role", "system").put("content", system))
+                  for (t in turns) {
+                      messages.put(
+                          JSONObject().put("role", if (t.first == "user") "user" else "assistant").put("content", t.second)
+                      )
+                  }
+                  val body = JSONObject()
+                      .put("model", model)
+                      .put("messages", messages)
+                      .put("stream", true)
+                      .put("stream_options", JSONObject().put("include_usage", true))
+
+                  val c = URL(router + "chat/completions").openConnection() as HttpURLConnection
+                  conn = c
+                  c.requestMethod = "POST"
+                  c.doOutput = true
+                  c.connectTimeout = 20000
+                  c.readTimeout = 120000
+                  c.setRequestProperty("Content-Type", "application/json")
+                  c.setRequestProperty("Authorization", "Bearer " + secret)
+                  var got = false
+                  try {
+                      c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                      val code = c.responseCode
+                      if (code != 200) {
+                          val err = try {
+                              c.errorStream?.bufferedReader()?.use { it.readText() } ?: ""
+                          } catch (e: Exception) {
+                              ""
+                          }
+                          val retry = code == 402 || code == 403 || code == 404 || code == 408 || code == 429 || code >= 500
+                          return R(if (retry) 1 else 2, errMsg(err, code), code == 429 || code == 402)
+                      }
+                      c.inputStream.bufferedReader().use { r ->
+                          while (true) {
+                              if (stopFlag) break
+                              val line = r.readLine() ?: break
+                              if (!line.startsWith("data:")) continue
+                              val js = line.substring(5).trim()
+                              if (js.isEmpty()) continue
+                              if (js == "[DONE]") break
+                              val o = JSONObject(js)
+                              val us = o.optJSONObject("usage")
+                              if (us != null) {
+                                  val tt = us.optInt("total_tokens", 0)
+                                  if (tt > 0) lastTokens = tt
+                              }
+                              val ch = o.optJSONArray("choices")
+                              if (ch != null && ch.length() > 0) {
+                                  val d = ch.getJSONObject(0).optJSONObject("delta")
+                                  if (d != null && !d.isNull("content")) {
+                                      val t = d.optString("content", "")
+                                      if (t.isNotEmpty()) {
+                                          got = true
+                                          outChars += t.length
+                                          emit("chunk", t)
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                      emit("done")
+                      return R(0)
+                  } catch (e: Exception) {
+                      if (stopFlag) {
+                          emit("done")
+                          return R(0)
+                      }
+                      if (got) {
+                          emit("error", "The connection dropped: " + (e.message ?: "unknown"))
+                          return R(0)
+                      }
+                      return R(1, e.message ?: "network problem")
+                  } finally {
+                      conn = null
+                  }
+              }
+
+              // ---------- images (Gemini only for now) ----------
+
+              private fun imageModels(k: KeyInfo, secret: String): List<String> {
+                  val ck = "img:" + k.id
+                  modelCache[ck]?.let { return it }
+                  val arr = geminiList(secret)
+                  val found = ArrayList<String>()
+                  for (i in 0 until arr.length()) {
+                      val o = arr.getJSONObject(i)
+                      val name = o.optString("name")
+                      if (!canGenerate(o)) continue
+                      if (!name.contains("gemini") || !name.contains("image") || name.contains("imagen")) continue
+                      found.add(name)
+                  }
+                  val sorted = found.sortedWith(compareBy<String>({ it.contains("preview") }, { -ver(it) })).take(3)
+                  modelCache[ck] = sorted
+                  return sorted
+              }
+
+              private fun runImage(prompt: String) {
+                  val gems = ordered(keys()).filter { it.provider == "gemini" && !isExhausted(it.id) }
+                  if (gems.isEmpty()) {
+                      emit("error", "Images need a Gemini key that is not at its limit.")
+                      return
+                  }
+                  var last = ""
+                  for (k in gems) {
+                      val secret = Vault.get(prefs, k.id) ?: continue
+                      val models = try {
+                          imageModels(k, secret)
+                      } catch (e: Exception) {
+                          last = e.message ?: ""
+                          continue
+                      }
+                      if (models.isEmpty()) {
+                          last = "No image model is available for this key."
+                          continue
+                      }
+                      for (m in models) {
+                          if (stopFlag) {
+                              emit("done")
+                              return
+                          }
+                          emit("model", k.label + " \u00B7 " + m.removePrefix("models/"), false)
+                          try {
+                              val body = JSONObject()
+                                  .put(
+                                      "contents",
+                                      JSONArray().put(
+                                          JSONObject().put("role", "user").put(
+                                              "parts", JSONArray().put(JSONObject().put("text", prompt))
+                                          )
+                                      )
+                                  )
+                                  .put(
+                                      "generationConfig",
+                                      JSONObject().put("responseModalities", JSONArray().put("TEXT").put("IMAGE"))
+                                  )
+                              val c = URL(gem + m + ":generateContent").openConnection() as HttpURLConnection
+                              conn = c
+                              c.requestMethod = "POST"
+                              c.doOutput = true
+                              c.connectTimeout = 20000
+                              c.readTimeout = 120000
+                              c.setRequestProperty("Content-Type", "application/json")
+                              c.setRequestProperty("x-goog-api-key", secret)
+                              c.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+                              val code = c.responseCode
+                              val txt = (if (code == 200) c.inputStream else c.errorStream)
+                                  ?.bufferedReader()?.use { it.readText() } ?: ""
+                              if (code != 200) {
+                                  last = errMsg(txt, code)
+                                  if (code == 429) markExhausted(k.id, looksDaily(last))
+                                  continue
+                              }
+                              val parts = JSONObject(txt).optJSONArray("candidates")
+                                  ?.optJSONObject(0)?.optJSONObject("content")?.optJSONArray("parts")
+                              var data = ""
+                              var mime = "image/png"
+                              var text = ""
+                              if (parts != null) {
+                                  for (j in 0 until parts.length()) {
+                                      val pt = parts.getJSONObject(j)
+                                      val inl = pt.optJSONObject("inlineData") ?: pt.optJSONObject("inline_data")
+                                      if (inl != null && !inl.isNull("data")) {
+                                          data = inl.optString("data", "")
+                                          mime = inl.optString("mimeType", inl.optString("mime_type", "image/png"))
+                                      } else if (!pt.isNull("text")) {
+                                          text += pt.optString("text", "")
+                                      }
+                                  }
+                              }
+                              if (data.isNotEmpty()) {
+                                  addUsage(k.id, 1300L)
+                                  emitRaw(
+                                      JSONObject().put("type", "image").put("mime", mime)
+                                          .put("data", data).put("text", text)
+                                  )
+                                  return
+                              }
+                              last = "The model returned no image."
+                          } catch (e: Exception) {
+                              if (stopFlag) {
+                                  emit("done")
+                                  return
+                              }
+                              last = e.message ?: "network problem"
+                          } finally {
+                              conn = null
+                          }
+                      }
+                  }
+                  emit("error", "Could not make an image. " + last)
+              }
+          }
+          EOF
+
+          cat > app/src/main/assets/chat.html <<'EOF'
+          <!doctype html>
+          <html>
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+          <title>AI Chat</title>
+          <style>
+          :root{--bg:#0f1115;--card:#171a21;--line:#262b36;--text:#f2f4f8;--sub:#8b94a5;--acc:#3b82f6;--ubg:#1f2937;--cbg:#0b0d11}
+          html.light{--bg:#f6f7f9;--card:#ffffff;--line:#d9dde5;--text:#12151a;--sub:#5b6472;--ubg:#dbeafe;--cbg:#eef1f6}
+          *{box-sizing:border-box}
+          [hidden]{display:none!important}
+          html{font-size:15px}
+          html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:system-ui,-apple-system,Roboto,sans-serif;line-height:1.5}
+          body{font-size:1rem}
+          #app{display:flex;flex-direction:column;height:100%}
+          button,select{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+          button.pri{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+          #top{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--sub);flex-wrap:wrap}
+          #top .sp{flex:1}
+          #top button{padding:5px 10px;font-size:12px}
+          .tag{border:1px solid var(--line);border-radius:999px;padding:3px 10px;background:transparent;color:var(--sub);font-size:12px}
+          .tag.on{color:var(--text)}
+          .tag.bk{border-color:var(--acc);color:var(--acc)}
+          .tag.warn{border-color:#d97706;color:#d97706}
+          #keys{flex:1;overflow-y:auto;padding:16px}
+          #keys h2{margin:0 0 4px;font-size:1.3rem}
+          #keys p{margin:0 0 12px;color:var(--sub);font-size:.9rem}
+          .kcard{border:1px solid var(--line);background:var(--card);border-radius:12px;padding:12px;margin-bottom:10px}
+          .kh{display:flex;justify-content:space-between;align-items:center;gap:8px;font-weight:600}
+          .bar{height:6px;background:var(--line);border-radius:3px;margin:10px 0 6px;overflow:hidden}
+          .fill{height:100%;background:var(--acc)}
+          .fill.low{background:#d97706}
+          .kinfo{font-size:.8rem;color:var(--sub)}
+          .krow{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+          .krow button{padding:5px 10px;font-size:.8rem}
+          .bf{margin-top:8px;display:flex;gap:6px}
+          .bf input{flex:1}
+          #keys input,#keys select{width:100%;padding:11px;margin-bottom:10px;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:10px;font:inherit}
+          #keys .bf input{margin:0}
+          #keys label{display:flex;gap:8px;align-items:center;margin:12px 0;font-size:.9rem}
+          #keys label input{width:auto;margin:0}
+          #keys .note{font-size:.8rem;color:var(--sub);margin-top:10px}
+          #keys h3{margin:18px 0 8px;font-size:1rem}
+          #msgs{flex:1;overflow-y:auto;padding:12px;-webkit-overflow-scrolling:touch}
+          .m{margin:0 0 12px;padding:10px 12px;border-radius:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+          .u{background:var(--ubg);margin-left:16%}
+          .a{background:var(--card);border:1px solid var(--line)}
+          .err{background:#2a1215;border:1px solid #7f1d1d;color:#fecaca}
+          html.light .err{background:#fee2e2;border-color:#fca5a5;color:#7f1d1d}
+          .hint{color:var(--sub);text-align:center;margin-top:40px;white-space:pre-wrap}
+          .m code{background:var(--cbg);border-radius:4px;padding:1px 5px;font:.85em ui-monospace,monospace}
+          .m img{max-width:100%;border-radius:10px;display:block;margin-bottom:8px}
+          .code{margin:8px 0;border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--cbg);white-space:normal}
+          .ch{display:flex;justify-content:space-between;align-items:center;padding:4px 6px 4px 12px;font-size:12px;color:var(--sub);border-bottom:1px solid var(--line);gap:6px}
+          .ch .bs{display:flex;gap:6px}
+          .ch button{padding:4px 10px;font-size:12px;border-radius:8px}
+          .code pre{margin:0;padding:10px 12px;overflow-x:auto;font:.82rem/1.45 ui-monospace,monospace;white-space:pre}
+          #banner{padding:8px 12px;border-top:1px solid var(--line);font-size:.9rem;background:var(--card)}
+          #banner .bb{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap}
+          #status{padding:0 14px;height:18px;font-size:12px;color:var(--sub)}
+          #cmds{display:flex;gap:6px;padding:4px 10px;overflow-x:auto}
+          #cmds button{padding:5px 11px;font-size:13px;white-space:nowrap;border-radius:999px;color:var(--sub)}
+          #bar{display:flex;gap:8px;padding:8px 10px 10px;border-top:1px solid var(--line);align-items:flex-end}
+          #ta{flex:1;resize:none;max-height:130px;padding:10px 12px;background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;font:inherit}
+          #go{padding:10px 16px}
+          </style>
+          </head>
+          <body>
+          <div id="app">
+            <div id="top">
+              <span class="tag on">Base prompt active</span>
+              <span class="tag" id="tModel">no model yet</span>
+              <button class="tag" id="tMeter">no key</button>
+              <span class="sp"></span>
+              <button id="bClear">Clear</button>
+              <button id="bKeys">Keys</button>
+            </div>
+
+            <div id="keys" hidden>
+              <h2>Keys</h2>
+              <p>Your AI accounts, in backup order. The first one in use is tried first.</p>
+              <div id="klist"></div>
+              <label><input type="checkbox" id="auto"> Switch to the next key automatically when a limit hits</label>
+              <div class="note">Percent left is an estimate. Providers do not tell apps how much free quota is left, so the app counts what you used today and compares it with the budget you set for each key. Keys are stored encrypted on this device and never uploaded.</div>
+              <h3>Add a key</h3>
+              <select id="kp"><option value="gemini">Gemini (aistudio.google.com)</option><option value="openrouter">OpenRouter (openrouter.ai, free models)</option></select>
+              <input id="kl" placeholder="Name, for example Gemini 1 (optional)" autocomplete="off">
+              <input id="kin" type="password" placeholder="Paste key here" autocomplete="off" autocapitalize="off" spellcheck="false">
+              <button class="pri" id="kAdd">Add key</button>
+              <div class="note" id="kMsg"></div>
+              <button id="kClose" style="margin-top:14px">Close</button>
+            </div>
+
+            <div id="msgs"></div>
+            <div id="banner" hidden></div>
+            <div id="status"></div>
+            <div id="cmds"></div>
+            <div id="bar">
+              <textarea id="ta" rows="1" placeholder="Message, or tap a command"></textarea>
+              <button class="pri" id="go">Send</button>
+            </div>
+          </div>
+
+          <script>
+          var N = window.Native;
+          var msgs = [], busy = false, cur = null, curEl = null, lastRole = '', KS = {keys: [], auto: false}, nearDone = {};
+          function $(i){ return document.getElementById(i); }
+          function mk(tag, cls, text){ var e = document.createElement(tag); if(cls) e.className = cls; if(text !== undefined) e.textContent = text; return e; }
+          function btn(text, fn, cls){ var b = mk('button', cls || '', text); b.onclick = fn; return b; }
+
+          /* ---------- text and code rendering ---------- */
+          function detectName(s){
+            s = (s || '').trim().replace(/^[#>*\-\s`]+/, '').replace(/[*`:\s]+$/, '').replace(/^(file|filename)\s*:\s*/i, '');
+            if(/^[\w.\-\/]+\.[A-Za-z0-9]{1,8}$/.test(s)) return s.split('/').pop();
+            return '';
+          }
+          function lastLine(pre){
+            var ls = pre.split('\n').map(function(x){ return x.trim(); }).filter(Boolean);
+            return ls.length ? ls[ls.length - 1] : '';
+          }
+          function parse(text){
+            var out = [], re = /```([^\n`]*)\n?([\s\S]*?)(```|$)/g, last = 0, m;
+            while((m = re.exec(text)) !== null){
+              var pre = text.slice(last, m.index);
+              if(pre) out.push({k: 't', s: pre});
+              var lang = m[1].trim();
+              out.push({k: 'c', lang: lang, name: detectName(lang) || detectName(lastLine(pre)), s: m[2]});
+              last = re.lastIndex;
+            }
+            if(last < text.length) out.push({k: 't', s: text.slice(last)});
+            return out;
+          }
+          function inline(parent, s){
+            s.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/).forEach(function(p){
+              if(!p) return;
+              if(p.charAt(0) === '`' && p.length > 2){ parent.appendChild(mk('code', '', p.slice(1, -1))); }
+              else if(p.slice(0, 2) === '**' && p.length > 4){ parent.appendChild(mk('b', '', p.slice(2, -2))); }
+              else parent.appendChild(document.createTextNode(p));
+            });
+          }
+          function block(parent, seg){
+            var code = seg.s.replace(/\n$/, '');
+            var box = mk('div', 'code'), head = mk('div', 'ch'), bs = mk('div', 'bs');
+            head.appendChild(mk('span', '', seg.name || seg.lang || 'code'));
+            if(seg.name) bs.appendChild(btn('Save', function(){ N.saveFile(seg.name, code, false); }));
+            bs.appendChild(btn('Copy', function(){ N.copy(code); }));
+            head.appendChild(bs);
+            box.appendChild(head); box.appendChild(mk('pre', '', code));
+            parent.appendChild(box);
+          }
+          function fill(el, m){
+            el.textContent = '';
+            if(m.img){
+              var im = mk('img'); im.src = m.img; el.appendChild(im);
+              var ext = m.img.indexOf('image/jpeg') > -1 ? 'jpg' : 'png';
+              var b = btn('Save image', function(){ N.saveFile('image-' + Date.now() + '.' + ext, m.img.split(',')[1], true); });
+              b.style.marginBottom = '8px'; el.appendChild(b);
+            }
+            parse(m.t || '').forEach(function(seg){
+              if(seg.k === 't') inline(el, seg.s); else block(el, seg);
+            });
+          }
+          function scrollDown(){ var s = $('msgs'); s.scrollTop = s.scrollHeight; }
+          function addMsg(m){
+            var d = mk('div', 'm ' + (m.r === 'user' ? 'u' : 'a'));
+            fill(d, m); $('msgs').appendChild(d); return d;
+          }
+          function showErr(t){ $('msgs').appendChild(mk('div', 'm err', t)); scrollDown(); }
+          function hintIfEmpty(){
+            var old = $('hint'); if(old) old.remove();
+            if(msgs.length === 0){
+              var h = mk('div', 'hint', 'Ask me to build something.\nTap a command below to start.'); h.id = 'hint';
+              $('msgs').appendChild(h);
+            }
+          }
+          function setStatus(t){ $('status').textContent = t; }
+          function listFiles(){
+            var seen = {}, out = [];
+            msgs.forEach(function(m){
+              if(m.r !== 'model' || m.local) return;
+              parse(m.t || '').forEach(function(s){ if(s.k === 'c' && s.name && !seen[s.name]){ seen[s.name] = 1; out.push(s.name); } });
+            });
+            return out.slice(-40);
+          }
+          function save(){
+            try{
+              var keep = msgs.slice(-200).map(function(m){
+                if(m.img) return {r: m.r, t: (m.t || '') + '\n[image not saved]', local: true};
+                return m;
+              });
+              N.saveHistory(JSON.stringify(keep));
+            }catch(e){}
+          }
+
+          /* ---------- banner ---------- */
+          function clearBanner(){ $('banner').hidden = true; $('banner').textContent = ''; }
+          function banner(text, buttons){
+            var b = $('banner'); b.textContent = ''; b.hidden = false;
+            b.appendChild(mk('div', '', text));
+            var row = mk('div', 'bb');
+            buttons.forEach(function(x){ row.appendChild(btn(x[0], x[1], x[2] || '')); });
+            b.appendChild(row);
+          }
+
+          /* ---------- keys and meter ---------- */
+          function loadKeys(){ try{ KS = JSON.parse(N.keysJson()); }catch(e){} }
+          function activeKey(){ for(var i = 0; i < KS.keys.length; i++) if(KS.keys[i].active) return KS.keys[i]; return null; }
+          function fmt(n){ return n >= 1000000 ? (n / 1000000).toFixed(1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n); }
+          function updateMeter(){
+            loadKeys();
+            var a = activeKey(), t = $('tMeter');
+            if(!a){ t.textContent = 'no key'; t.className = 'tag warn'; return; }
+            t.textContent = a.label + ' \u00B7 ' + (a.exhausted ? 'limit reached' : a.pct + '% left (est.)');
+            t.className = 'tag' + ((a.exhausted || a.pct <= 15) ? ' warn' : ' on');
+          }
+          function showKeys(on){
+            if(!on && !N.hasKey()) on = true;
+            $('keys').hidden = !on;
+            ['msgs', 'cmds', 'bar', 'status'].forEach(function(i){ $(i).hidden = on; });
+            if(on){ clearBanner(); renderKeys(); }
+            $('kClose').hidden = !N.hasKey();
+            updateMeter();
+          }
+          function renderKeys(){
+            loadKeys();
+            var box = $('klist'); box.textContent = '';
+            $('auto').checked = !!KS.auto;
+            KS.keys.forEach(function(k, i){
+              var c = mk('div', 'kcard'), h = mk('div', 'kh');
+              h.appendChild(mk('span', '', k.label + ' \u00B7 ' + (k.provider === 'gemini' ? 'Gemini' : 'OpenRouter')));
+              if(k.active) h.appendChild(mk('span', 'tag on', 'In use'));
+              c.appendChild(h);
+              var bar = mk('div', 'bar'), f = mk('div', 'fill' + (k.pct <= 15 ? ' low' : ''));
+              f.style.width = k.pct + '%'; bar.appendChild(f); c.appendChild(bar);
+              c.appendChild(mk('div', 'kinfo', k.exhausted
+                ? 'Limit reached. Tries again ' + new Date(k.until).toLocaleString()
+                : k.pct + '% left (estimated) \u00B7 ' + fmt(k.used) + ' of ' + fmt(k.budget) + ' tokens today \u00B7 ' + k.reqs + ' requests'));
+              var row = mk('div', 'krow');
+              if(!k.active) row.appendChild(btn('Use', function(){ N.setActive(k.id); renderKeys(); updateMeter(); }));
+              if(i > 0) row.appendChild(btn('Up', function(){ N.moveKey(k.id, -1); renderKeys(); }));
+              if(i < KS.keys.length - 1) row.appendChild(btn('Down', function(){ N.moveKey(k.id, 1); renderKeys(); }));
+              var bf = mk('div', 'bf'); bf.hidden = true;
+              var inp = mk('input'); inp.type = 'number'; inp.value = k.budget; inp.placeholder = 'Tokens per day';
+              bf.appendChild(inp);
+              bf.appendChild(btn('Save', function(){ N.setBudget(k.id, String(inp.value)); renderKeys(); updateMeter(); }, 'pri'));
+              row.appendChild(btn('Budget', function(){ bf.hidden = !bf.hidden; }));
+              var rm = btn('Remove', function(){}); armed(rm, 'Remove', function(){ N.removeKey(k.id); renderKeys(); updateMeter(); if(!N.hasKey()) showKeys(true); });
+              row.appendChild(rm);
+              c.appendChild(row); c.appendChild(bf);
+              box.appendChild(c);
+            });
+          }
+          function armed(b, label, fn){
+            var on = false, t;
+            b.onclick = function(){
+              if(!on){ on = true; b.textContent = 'Tap again'; t = setTimeout(function(){ on = false; b.textContent = label; }, 3000); }
+              else { clearTimeout(t); on = false; b.textContent = label; fn(); }
+            };
+          }
+          function checkNear(){
+            loadKeys();
+            var a = activeKey();
+            if(!a || a.exhausted || a.pct > 15 || nearDone[a.id]) return;
+            var nx = null;
+            KS.keys.forEach(function(k){ if(!nx && k.id !== a.id && !k.exhausted) nx = k; });
+            nearDone[a.id] = 1;
+            var used = 100 - a.pct;
+            if(nx){
+              banner(a.label + ' is about ' + used + '% used (estimate). Switch to ' + nx.label + '? Your next message will carry on with a handoff so nothing is lost.', [
+                ['Switch to ' + nx.label, function(){ N.setActive(nx.id); updateMeter(); clearBanner(); setStatus('Switched to ' + nx.label); }, 'pri'],
+                ['Not now', clearBanner]
+              ]);
+            } else {
+              banner(a.label + ' is about ' + used + '% used (estimate). Add a backup key so the app can switch for you.', [
+                ['Add a key', function(){ showKeys(true); }, 'pri'], ['Not now', clearBanner]
+              ]);
+            }
+          }
+
+          /* ---------- native events ---------- */
+          function dropEmpty(){
+            if(cur && !cur.t && !cur.img){
+              var i = msgs.indexOf(cur); if(i >= 0) msgs.splice(i, 1);
+              if(curEl) curEl.remove();
+            }
+          }
+          function setBusy(b){ busy = b; $('go').textContent = b ? 'Stop' : 'Send'; }
+          function finish(){ setBusy(false); setStatus(''); cur = null; curEl = null; save(); updateMeter(); }
+
+          window.onNative = function(s){
+            var e = JSON.parse(s);
+            if(e.type === 'model'){
+              $('tModel').textContent = e.text + (e.flag ? ' (backup)' : '');
+              $('tModel').className = 'tag' + (e.flag ? ' bk' : '');
+              setStatus('Thinking...');
+            } else if(e.type === 'switched'){
+              setStatus('Switched to ' + e.text + '. Continuing...'); updateMeter();
+            } else if(e.type === 'chunk'){
+              if(!cur) return;
+              cur.t += e.text; fill(curEl, cur); setStatus('Writing...'); scrollDown();
+            } else if(e.type === 'image'){
+              if(!cur) return;
+              cur.img = 'data:' + e.mime + ';base64,' + e.data; cur.t = e.text || '';
+              fill(curEl, cur); scrollDown(); finish();
+            } else if(e.type === 'done'){
+              finish(); checkNear();
+            } else if(e.type === 'limit'){
+              dropEmpty(); finish();
+              banner(e.text + ' hit its limit. Continue on ' + e.nextLabel + '? The new account gets your project name, the files so far and the recent messages, so nothing is lost.', [
+                ['Continue on ' + e.nextLabel, function(){ N.setActive(e.nextId); clearBanner(); startRun(lastRole, true); }, 'pri'],
+                ['Cancel', clearBanner]
+              ]);
+            } else if(e.type === 'error'){
+              dropEmpty(); showErr(e.text); finish();
+            }
+          };
+
+          /* ---------- sending ---------- */
+          function startRun(role, handoff){
+            lastRole = role;
+            var arr = [];
+            msgs.forEach(function(x){
+              if(x === cur || x.local) return;
+              arr.push({role: x.r === 'user' ? 'user' : 'model', text: x.r === 'user' ? (x.c !== undefined ? x.c : x.t) : x.t});
+            });
+            arr = arr.slice(-24);
+            while(arr.length && arr[0].role !== 'user') arr.shift();
+            var total = 0; arr.forEach(function(x){ total += x.text.length; });
+            while(arr.length > 1 && total > 60000){ total -= arr[0].text.length; arr.shift(); }
+            while(arr.length && arr[0].role !== 'user') arr.shift();
+            var payload = {role: role, messages: arr, handoff: !!handoff, files: listFiles()};
+            cur = {r: 'model', t: ''};
+            msgs.push(cur); curEl = addMsg(cur); scrollDown();
+            setBusy(true); setStatus('Thinking...');
+            N.send(JSON.stringify(payload));
+          }
+
+          function send(){
+            var text = $('ta').value.trim();
+            if(!text || busy) return;
+            var mm = text.match(/^\/(prompt|code|image|fix|deploy|explain)\b\s*([\s\S]*)$/i);
+            var role = mm ? mm[1].toLowerCase() : '';
+            var clean = mm ? mm[2].trim() : text;
+            if(role && !clean){ showErr('Add a message after the command.'); return; }
+            if(!N.hasKey()){ showKeys(true); return; }
+            var h = $('hint'); if(h) h.remove();
+            clearBanner();
+            $('ta').value = ''; $('ta').style.height = 'auto';
+
+            if(role === 'image'){
+              var u = {r: 'user', t: text, c: '', local: true};
+              msgs.push(u); addMsg(u);
+              cur = {r: 'model', t: '', img: '', local: true};
+              msgs.push(cur); curEl = addMsg(cur); scrollDown();
+              setBusy(true); setStatus('Making the image...');
+              N.send(JSON.stringify({mode: 'image', prompt: clean}));
+              return;
+            }
+            var um = {r: 'user', t: text, c: clean};
+            msgs.push(um); addMsg(um);
+            startRun(role, false);
+          }
+
+          function init(){
+            if(N.theme() === 'light') document.documentElement.className = 'light';
+            var fs = parseFloat(N.fontScale()) || 1;
+            document.documentElement.style.fontSize = (15 * fs) + 'px';
+
+            try{ msgs = JSON.parse(N.loadHistory()) || []; }catch(e){ msgs = []; }
+            msgs.forEach(function(m){ addMsg(m); });
+            hintIfEmpty(); scrollDown();
+
+            ['/prompt', '/code', '/image', '/fix', '/deploy', '/explain'].forEach(function(c){
+              $('cmds').appendChild(btn(c, function(){
+                $('ta').value = c + ' ' + $('ta').value.replace(/^\/\w+\s*/, ''); $('ta').focus();
+              }));
+            });
+            $('go').onclick = function(){ if(busy){ N.stop(); } else { send(); } };
+            $('ta').oninput = function(){ this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 130) + 'px'; };
+            armed($('bClear'), 'Clear', function(){ msgs = []; $('msgs').textContent = ''; save(); hintIfEmpty(); });
+            $('bKeys').onclick = function(){ showKeys(true); };
+            $('tMeter').onclick = function(){ showKeys(true); };
+            $('kClose').onclick = function(){ showKeys(false); };
+            $('auto').onchange = function(){ N.setAuto(this.checked); };
+            $('kAdd').onclick = function(){
+              if(N.addKey($('kp').value, $('kl').value, $('kin').value)){
+                $('kin').value = ''; $('kl').value = ''; $('kMsg').textContent = ''; renderKeys(); showKeys(false);
+              } else {
+                $('kMsg').style.color = '#d97706';
+                $('kMsg').textContent = 'That does not look like a key. Copy it again and paste.';
+              }
+            };
+            showKeys(!N.hasKey());
+          }
+          init();
+          </script>
+          </body>
+          </html>
+          EOF
+
           cat > app/src/main/java/dev/workspace/MainActivity.kt <<'EOF'
           package dev.workspace
 
@@ -200,6 +1514,7 @@ jobs:
           import android.webkit.URLUtil
           import android.webkit.ValueCallback
           import android.webkit.WebChromeClient
+          import android.webkit.WebResourceRequest
           import android.webkit.WebSettings
           import android.webkit.WebView
           import android.webkit.WebViewClient
@@ -212,6 +1527,7 @@ jobs:
           import android.widget.Switch
           import android.widget.TextView
           import android.widget.Toast
+          import org.json.JSONObject
           import androidx.webkit.ProfileStore
           import androidx.webkit.WebViewCompat
           import androidx.webkit.WebViewFeature
@@ -221,6 +1537,7 @@ jobs:
               private data class Site(val name: String, val url: String)
 
               private val defaults = listOf(
+                  Site("AI Chat", "app://chat"),
                   Site("GitHub", "https://github.com"),
                   Site("Cloudflare", "https://dash.cloudflare.com"),
                   Site("Firebase", "https://console.firebase.google.com"),
@@ -230,12 +1547,47 @@ jobs:
               private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
               private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 
-              private val bg = Color.parseColor("#0f1115")
-              private val cCard = Color.parseColor("#171a21")
-              private val cStroke = Color.parseColor("#262b36")
-              private val cText = Color.parseColor("#f2f4f8")
-              private val cSub = Color.parseColor("#8b94a5")
+              private var bg = 0
+              private var cCard = 0
+              private var cStroke = 0
+              private var cText = 0
+              private var cSub = 0
+              private var cActive = 0
               private val cAccent = Color.parseColor("#3b82f6")
+              private var fs = 1f
+
+              private val suggested = listOf(
+                  Pair(Site("PWABuilder", "https://www.pwabuilder.com"), "Check and package your web app"),
+                  Pair(Site("PageSpeed", "https://pagespeed.web.dev"), "Test speed and quality of a page"),
+                  Pair(Site("AI Studio", "https://aistudio.google.com"), "Get and manage Gemini keys"),
+                  Pair(Site("OpenRouter", "https://openrouter.ai"), "Free AI models and keys")
+              )
+
+              private fun isLight() = prefs.getString("theme", "dark") == "light"
+
+              private fun loadTheme() {
+                  if (isLight()) {
+                      bg = Color.parseColor("#f6f7f9")
+                      cCard = Color.parseColor("#ffffff")
+                      cStroke = Color.parseColor("#d9dde5")
+                      cText = Color.parseColor("#12151a")
+                      cSub = Color.parseColor("#5b6472")
+                      cActive = Color.parseColor("#dbeafe")
+                  } else {
+                      bg = Color.parseColor("#0f1115")
+                      cCard = Color.parseColor("#171a21")
+                      cStroke = Color.parseColor("#262b36")
+                      cText = Color.parseColor("#f2f4f8")
+                      cSub = Color.parseColor("#8b94a5")
+                      cActive = Color.parseColor("#2a3140")
+                  }
+                  fs = (prefs.getString("fontScale", "1.0") ?: "1.0").toFloatOrNull() ?: 1f
+                  window.statusBarColor = bg
+                  window.navigationBarColor = bg
+                  window.decorView.systemUiVisibility =
+                      if (isLight()) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                      else 0
+              }
 
               private val DESKTOP_UA =
                   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -272,12 +1624,24 @@ jobs:
               private var fileCallback: ValueCallback<Array<Uri>>? = null
 
               override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
                   prefs = getSharedPreferences("ws", MODE_PRIVATE)
+                  setTheme(
+                      if (isLight()) android.R.style.Theme_DeviceDefault_Light_NoActionBar
+                      else android.R.style.Theme_DeviceDefault_NoActionBar
+                  )
+                  super.onCreate(savedInstanceState)
+                  loadTheme()
                   project = prefs.getString("project", "Default") ?: "Default"
                   site = prefs.getString("defaultTab", "GitHub") ?: "GitHub"
                   window.statusBarColor = bg
                   window.navigationBarColor = bg
+                  if (!prefs.getBoolean("mig_chat", false)) {
+                      for (p in projects()) {
+                          val e = enabledFor(p)
+                          if (e != null) saveEnabled(p, listOf("AI Chat") + e.toList())
+                      }
+                      prefs.edit().putBoolean("mig_chat", true).apply()
+                  }
                   buildUi()
                   startKeepAlive()
                   showHome()
@@ -299,7 +1663,7 @@ jobs:
               private fun tv(t: String, size: Float, color: Int, bold: Boolean = false): TextView =
                   TextView(this).apply {
                       text = t
-                      textSize = size
+                      textSize = size * fs
                       setTextColor(color)
                       if (bold) setTypeface(null, Typeface.BOLD)
                   }
@@ -311,12 +1675,12 @@ jobs:
 
               private fun chip(label: String, active: Boolean): TextView = TextView(this).apply {
                   this.text = label
-                  textSize = 14f
+                  textSize = 14f * fs
                   setSingleLine(true)
                   gravity = Gravity.CENTER_VERTICAL
-                  setTextColor(if (active) Color.WHITE else cSub)
+                  setTextColor(if (active) cText else cSub)
                   setPadding(dp(14), dp(10), dp(14), dp(10))
-                  background = rounded(if (active) Color.parseColor("#2a3140") else cCard, 10, cStroke)
+                  background = rounded(if (active) cActive else cCard, 10, cStroke)
               }
 
               private fun icon(t: String, size: Float, onClick: (View) -> Unit): TextView =
@@ -357,6 +1721,7 @@ jobs:
                   titleView = tv("", 17f, cText, true).apply {
                       setSingleLine(true)
                       ellipsize = TextUtils.TruncateAt.END
+                      setOnClickListener { quickSwitch() }
                   }
                   bar.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
                   bar.addView(icon("\u22EE", 22f) { showMenu(it) })
@@ -454,8 +1819,92 @@ jobs:
                   }
                   col.addView(settingsBtn, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) })
 
+                  col.addView(tv("SUGGESTED SITES", 12f, cSub, true).apply {
+                      letterSpacing = 0.1f
+                      setPadding(0, dp(28), 0, dp(10))
+                  })
+                  for (pair in suggested) {
+                      val s = pair.first
+                      val added = sites().any { it.name == s.name }
+                      val row = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          setPadding(dp(16), dp(12), dp(16), dp(12))
+                          background = rounded(cCard, 12, cStroke)
+                          if (!added) {
+                              setOnClickListener {
+                                  saveCustomSites(customSites() + s)
+                                  toast("Added. Turn it on with Tabs inside a project.")
+                                  showHome()
+                              }
+                          }
+                      }
+                      row.addView(tv(if (added) s.name + "  \u2713 added" else "+  " + s.name, 15f, cText, true))
+                      row.addView(tv(pair.second, 12f, cSub).apply { setPadding(0, dp(2), 0, 0) })
+                      col.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(8) })
+                  }
+
                   sv.addView(col)
                   return sv
+              }
+
+              private fun quickSwitch() {
+                  val list = projects()
+                  val items = (list.map { if (it == project) "\u2713 $it" else it } + "Home").toTypedArray()
+                  AlertDialog.Builder(this).setTitle("Switch project").setItems(items) { _, i ->
+                      if (i < list.size) {
+                          if (list[i] != project) openProject(list[i])
+                      } else {
+                          showHome()
+                      }
+                  }.show()
+              }
+
+              private fun fontLabel(): String = when (prefs.getString("fontScale", "1.0")) {
+                  "0.9" -> "Small"
+                  "1.15" -> "Large"
+                  else -> "Normal"
+              }
+
+              private fun backupSettings() {
+                  val o = JSONObject()
+                  for ((k, v) in prefs.all) {
+                      if (k.startsWith("vault_") || k.startsWith("hist_") || k.startsWith("use_") ||
+                          k.startsWith("ex_") || k.startsWith("key") || k == "handoff_next"
+                      ) continue
+                      if (v is String || v is Boolean) o.put(k, v)
+                  }
+                  val cb = getSystemService(ClipboardManager::class.java)
+                  cb.setPrimaryClip(ClipData.newPlainText("workspace settings", o.toString()))
+                  toast("Settings copied. Paste them into a note to keep them safe.")
+              }
+
+              private fun restoreSettings(after: () -> Unit) {
+                  val cb = getSystemService(ClipboardManager::class.java)
+                  val t = cb.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
+                  val o = try {
+                      JSONObject(t)
+                  } catch (e: Exception) {
+                      null
+                  }
+                  if (o == null || !o.has("projects")) {
+                      toast("Copy your settings backup first, then tap Restore")
+                      return
+                  }
+                  AlertDialog.Builder(this).setTitle("Restore settings?")
+                      .setMessage("This replaces your projects, tabs, sites and base prompt. Keys are not included in backups, so add them again in AI Chat.")
+                      .setPositiveButton("Restore") { _, _ ->
+                          val e = prefs.edit()
+                          val it = o.keys()
+                          while (it.hasNext()) {
+                              val k = it.next()
+                              if (k.startsWith("vault_") || k.startsWith("key")) continue
+                              val v = o.get(k)
+                              if (v is String) e.putString(k, v) else if (v is Boolean) e.putBoolean(k, v)
+                          }
+                          e.apply()
+                          after()
+                      }
+                      .setNegativeButton("Cancel", null).show()
               }
 
               private fun projectOptions(name: String) {
@@ -584,9 +2033,9 @@ jobs:
 
               private fun pickTemplate(name: String) {
                   val templates = listOf<Pair<String, List<String>?>>(
-                      Pair("Web app", listOf("GitHub", "Cloudflare", "Claude")),
-                      Pair("Game", listOf("GitHub", "Claude")),
-                      Pair("Store", listOf("GitHub", "Cloudflare", "Firebase", "Claude")),
+                      Pair("Web app", listOf("AI Chat", "GitHub", "Cloudflare", "Claude")),
+                      Pair("Game", listOf("AI Chat", "GitHub", "Claude")),
+                      Pair("Store", listOf("AI Chat", "GitHub", "Cloudflare", "Firebase", "Claude")),
                       Pair("Blank (all tabs)", null)
                   )
                   val labels = templates.map { it.first }.toTypedArray()
@@ -704,6 +2153,29 @@ jobs:
                   toggle("Keep tabs alive (no reload when switching)", "keepAlive", true) { }
                   toggle("Desktop site", "desktop", false) { applyDesktopToAll() }
 
+                  var dlg: AlertDialog? = null
+
+                  val themeBtn = chip("Theme: " + (if (isLight()) "Light" else "Dark"), false)
+                  themeBtn.setOnClickListener {
+                      prefs.edit().putString("theme", if (isLight()) "dark" else "light").apply()
+                      dlg?.dismiss()
+                      recreate()
+                  }
+                  col.addView(themeBtn, lp(WRAP, WRAP))
+
+                  val fontBtn = chip("Text size: " + fontLabel(), false)
+                  fontBtn.setOnClickListener {
+                      val next = when (prefs.getString("fontScale", "1.0")) {
+                          "0.9" -> "1.0"
+                          "1.0" -> "1.15"
+                          else -> "0.9"
+                      }
+                      prefs.edit().putString("fontScale", next).apply()
+                      dlg?.dismiss()
+                      recreate()
+                  }
+                  col.addView(fontBtn, lp(WRAP, WRAP))
+
                   val defBtn = chip("Default tab: " + (prefs.getString("defaultTab", "GitHub") ?: "GitHub"), false)
                   defBtn.setOnClickListener {
                       val all = sites()
@@ -719,13 +2191,27 @@ jobs:
                   bpBtn.setOnClickListener { baseDialog() }
                   col.addView(bpBtn, lp(WRAP, WRAP))
 
-                  AlertDialog.Builder(this).setTitle("Settings").setView(ScrollView(this).apply { addView(col) })
+                  val backBtn = chip("Back up settings (copy)", false)
+                  backBtn.setOnClickListener { backupSettings() }
+                  col.addView(backBtn, lp(WRAP, WRAP))
+
+                  val restBtn = chip("Restore settings (from copy)", false)
+                  restBtn.setOnClickListener {
+                      restoreSettings {
+                          dlg?.dismiss()
+                          recreate()
+                      }
+                  }
+                  col.addView(restBtn, lp(WRAP, WRAP))
+
+                  dlg = AlertDialog.Builder(this).setTitle("Settings").setView(ScrollView(this).apply { addView(col) })
                       .setPositiveButton("Close", null).show()
               }
 
               private fun applyDesktopToAll() {
                   val d = desktopMode()
                   for (v in views.values) {
+                      if (v.url?.startsWith("file:") == true) continue
                       v.settings.userAgentString = userAgent()
                       v.settings.useWideViewPort = d
                       v.settings.loadWithOverviewMode = d
@@ -822,11 +2308,12 @@ jobs:
 
               private fun forceDesktop(view: WebView?) {
                   if (view == null || !desktopMode()) return
+                  if (view.url?.startsWith("file:") == true) return
                   view.evaluateJavascript(DESKTOP_JS, null)
                   view.postDelayed({ view.evaluateJavascript(DESKTOP_JS, null) }, 700)
               }
 
-              private fun makeWebView(): WebView {
+              private fun makeWebView(chat: Boolean): WebView {
                   val wv = WebView(this)
                   // Each project gets its own isolated cookies / storage / cache.
                   if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
@@ -841,8 +2328,8 @@ jobs:
                       domStorageEnabled = true
                       allowFileAccess = false
                       userAgentString = userAgent()
-                      useWideViewPort = desktopMode()
-                      loadWithOverviewMode = desktopMode()
+                      useWideViewPort = desktopMode() && !chat
+                      loadWithOverviewMode = desktopMode() && !chat
                       setSupportZoom(true)
                       builtInZoomControls = true
                       displayZoomControls = false
@@ -856,6 +2343,12 @@ jobs:
                       override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                           forceDesktop(view)
                       }
+                  }
+                  if (chat) {
+                      wv.webViewClient = object : WebViewClient() {
+                          override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean = true
+                      }
+                      wv.addJavascriptInterface(ChatBridge(this, wv, project, prefs) { baseText() }, "Native")
                   }
                   wv.webChromeClient = object : WebChromeClient() {
                       override fun onShowFileChooser(
@@ -917,10 +2410,11 @@ jobs:
                   val key = "$project::$site"
                   var wv = views[key]
                   if (wv == null) {
-                      wv = makeWebView()
+                      val chat = site == "AI Chat"
+                      wv = makeWebView(chat)
                       views[key] = wv
                       container.addView(wv, FrameLayout.LayoutParams(MATCH, MATCH))
-                      wv.loadUrl(urlOf(site))
+                      wv.loadUrl(if (chat) "file:///android_asset/chat.html" else urlOf(site))
                   }
                   if (!keepAlive()) {
                       val dead = views.keys.filter { it != key }
