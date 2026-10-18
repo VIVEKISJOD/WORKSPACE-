@@ -1,0 +1,455 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Generate the Android project
+        run: |
+          mkdir -p app/src/main/java/dev/workspace
+
+          cat > settings.gradle.kts <<'EOF'
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "workspace"
+          include(":app")
+          EOF
+
+          cat > build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+          }
+          EOF
+
+          cat > gradle.properties <<'EOF'
+          android.useAndroidX=true
+          org.gradle.jvmargs=-Xmx2g
+          EOF
+
+          cat > app/build.gradle.kts <<'EOF'
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+          }
+
+          android {
+              namespace = "dev.workspace"
+              compileSdk = 34
+              defaultConfig {
+                  applicationId = "dev.workspace.app"
+                  minSdk = 26
+                  targetSdk = 34
+                  versionCode = 1
+                  versionName = "0.1"
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+          }
+
+          dependencies {
+              implementation("androidx.webkit:webkit:1.12.1")
+          }
+          EOF
+
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+              <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+              <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+              <application
+                  android:label="Workspace"
+                  android:usesCleartextTraffic="false"
+                  android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
+
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true"
+                      android:launchMode="singleTask"
+                      android:windowSoftInputMode="adjustResize"
+                      android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout|density|uiMode">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+
+                  <service
+                      android:name=".KeepAliveService"
+                      android:exported="false"
+                      android:foregroundServiceType="specialUse">
+                      <property
+                          android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                          android:value="Keeps developer web sessions alive in the background" />
+                  </service>
+              </application>
+          </manifest>
+          EOF
+
+          cat > app/src/main/java/dev/workspace/KeepAliveService.kt <<'EOF'
+          package dev.workspace
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.os.Build
+          import android.os.IBinder
+
+          class KeepAliveService : Service() {
+              override fun onBind(intent: Intent?): IBinder? = null
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  val nm = getSystemService(NotificationManager::class.java)
+                  nm.createNotificationChannel(
+                      NotificationChannel("keep", "Workspace running", NotificationManager.IMPORTANCE_LOW)
+                  )
+                  val pi = PendingIntent.getActivity(
+                      this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
+                  )
+                  val n = Notification.Builder(this, "keep")
+                      .setContentTitle("Workspace is running")
+                      .setContentText("Your tabs are being kept alive")
+                      .setSmallIcon(android.R.drawable.stat_notify_sync)
+                      .setContentIntent(pi)
+                      .setOngoing(true)
+                      .build()
+                  if (Build.VERSION.SDK_INT >= 34) {
+                      startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+                  } else {
+                      startForeground(1, n)
+                  }
+                  return START_STICKY
+              }
+          }
+          EOF
+
+          cat > app/src/main/java/dev/workspace/MainActivity.kt <<'EOF'
+          package dev.workspace
+
+          import android.Manifest
+          import android.app.Activity
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.content.SharedPreferences
+          import android.graphics.Color
+          import android.graphics.drawable.GradientDrawable
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.view.Gravity
+          import android.view.View
+          import android.view.ViewGroup
+          import android.webkit.CookieManager
+          import android.webkit.WebChromeClient
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.EditText
+          import android.widget.FrameLayout
+          import android.widget.HorizontalScrollView
+          import android.widget.LinearLayout
+          import android.widget.TextView
+          import androidx.webkit.WebViewCompat
+          import androidx.webkit.WebViewFeature
+
+          class MainActivity : Activity() {
+
+              private data class Site(val name: String, val url: String)
+
+              private val defaults = listOf(
+                  Site("GitHub", "https://github.com"),
+                  Site("Cloudflare", "https://dash.cloudflare.com"),
+                  Site("Firebase", "https://console.firebase.google.com"),
+                  Site("Claude", "https://claude.ai")
+              )
+
+              private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
+              private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+              private val bg = Color.parseColor("#0f1115")
+
+              private lateinit var prefs: SharedPreferences
+              private lateinit var container: FrameLayout
+              private lateinit var projectBtn: TextView
+              private lateinit var strip: LinearLayout
+              private val views = HashMap<String, WebView>()
+              private var project = "Default"
+              private var site = "GitHub"
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  prefs = getSharedPreferences("ws", MODE_PRIVATE)
+                  project = prefs.getString("project", "Default") ?: "Default"
+                  site = prefs.getString("site", "GitHub") ?: "GitHub"
+                  window.statusBarColor = bg
+                  window.navigationBarColor = bg
+                  buildUi()
+                  startKeepAlive()
+                  refreshStrip()
+                  showTab()
+              }
+
+              private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+              private fun lp(w: Int, h: Int, weight: Float = 0f) =
+                  LinearLayout.LayoutParams(w, h, weight).apply {
+                      setMargins(dp(4), dp(2), dp(4), dp(2))
+                  }
+
+              private fun chip(label: String, active: Boolean): TextView = TextView(this).apply {
+                  this.text = label
+                  textSize = 14f
+                  gravity = Gravity.CENTER_VERTICAL
+                  setTextColor(if (active) Color.WHITE else Color.parseColor("#9aa3b2"))
+                  setPadding(dp(14), dp(9), dp(14), dp(9))
+                  background = GradientDrawable().apply {
+                      cornerRadius = dp(8).toFloat()
+                      setColor(Color.parseColor(if (active) "#2a3140" else "#181b22"))
+                  }
+              }
+
+              private fun buildUi() {
+                  val root = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(bg)
+                  }
+
+                  val top = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(6), dp(6), dp(6), 0)
+                  }
+                  projectBtn = chip("", true).apply { setOnClickListener { pickProject() } }
+                  top.addView(projectBtn, lp(0, WRAP, 1f))
+                  top.addView(chip("Reload", false).apply {
+                      setOnClickListener { current()?.reload() }
+                  }, lp(WRAP, WRAP))
+                  top.addView(chip("+ Site", false).apply {
+                      setOnClickListener { addSite() }
+                  }, lp(WRAP, WRAP))
+                  root.addView(top, LinearLayout.LayoutParams(MATCH, WRAP))
+
+                  strip = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      setPadding(dp(6), dp(2), dp(6), dp(4))
+                  }
+                  val scroll = HorizontalScrollView(this).apply {
+                      isHorizontalScrollBarEnabled = false
+                      addView(strip)
+                  }
+                  root.addView(scroll, LinearLayout.LayoutParams(MATCH, WRAP))
+
+                  container = FrameLayout(this)
+                  root.addView(container, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  setContentView(root)
+              }
+
+              // ---------- projects & sites ----------
+
+              private fun projects(): List<String> =
+                  (prefs.getString("projects", "Default") ?: "Default")
+                      .split("\n").filter { it.isNotBlank() }.ifEmpty { listOf("Default") }
+
+              private fun saveProjects(list: List<String>) =
+                  prefs.edit().putString("projects", list.joinToString("\n")).apply()
+
+              private fun customSites(): List<Site> =
+                  (prefs.getString("sites", "") ?: "").split("\n")
+                      .filter { it.contains("|") }
+                      .map { Site(it.substringBefore("|"), it.substringAfter("|")) }
+
+              private fun saveCustomSites(list: List<Site>) =
+                  prefs.edit().putString("sites", list.joinToString("\n") { it.name + "|" + it.url }).apply()
+
+              private fun sites(): List<Site> = defaults + customSites()
+
+              private fun urlOf(name: String) =
+                  sites().firstOrNull { it.name == name }?.url ?: "https://github.com"
+
+              private fun current(): WebView? = views["$project::$site"]
+
+              private fun pickProject() {
+                  val list = projects()
+                  val items = (list.map { if (it == project) "\u2713 $it" else it } + "+ New project").toTypedArray()
+                  AlertDialog.Builder(this).setTitle("Projects").setItems(items) { _, i ->
+                      if (i < list.size) {
+                          project = list[i]
+                          prefs.edit().putString("project", project).apply()
+                          showTab()
+                      } else {
+                          newProject()
+                      }
+                  }.show()
+              }
+
+              private fun newProject() {
+                  val input = EditText(this).apply { hint = "Project name" }
+                  AlertDialog.Builder(this).setTitle("New project").setView(input)
+                      .setPositiveButton("Create") { _, _ ->
+                          val name = input.text.toString().trim().replace("\n", " ")
+                          if (name.isNotEmpty()) {
+                              val list = projects()
+                              if (name !in list) saveProjects(list + name)
+                              project = name
+                              prefs.edit().putString("project", project).apply()
+                              showTab()
+                          }
+                      }
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun addSite() {
+                  val input = EditText(this).apply {
+                      hint = "example.com"
+                      inputType = android.text.InputType.TYPE_TEXT_VARIATION_URI
+                  }
+                  AlertDialog.Builder(this).setTitle("Add site").setView(input)
+                      .setPositiveButton("Add") { _, _ ->
+                          var u = input.text.toString().trim()
+                          if (u.isNotEmpty()) {
+                              if (!u.startsWith("http")) u = "https://$u"
+                              val name = Uri.parse(u).host?.removePrefix("www.") ?: u
+                              if (sites().none { it.name == name }) {
+                                  saveCustomSites(customSites() + Site(name, u))
+                              }
+                              site = name
+                              prefs.edit().putString("site", site).apply()
+                              refreshStrip()
+                              showTab()
+                          }
+                      }
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun removeSite(s: Site) {
+                  AlertDialog.Builder(this).setTitle("Remove " + s.name + "?")
+                      .setPositiveButton("Remove") { _, _ ->
+                          saveCustomSites(customSites().filter { it.name != s.name })
+                          val dead = views.keys.filter { it.endsWith("::" + s.name) }
+                          for (k in dead) {
+                              views.remove(k)?.let { container.removeView(it); it.destroy() }
+                          }
+                          if (site == s.name) site = "GitHub"
+                          refreshStrip()
+                          showTab()
+                      }
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun refreshStrip() {
+                  strip.removeAllViews()
+                  for (s in sites()) {
+                      val c = chip(s.name, s.name == site)
+                      c.setOnClickListener {
+                          site = s.name
+                          prefs.edit().putString("site", site).apply()
+                          refreshStrip()
+                          showTab()
+                      }
+                      if (defaults.none { it.name == s.name }) {
+                          c.setOnLongClickListener { removeSite(s); true }
+                      }
+                      strip.addView(c, lp(WRAP, WRAP))
+                  }
+              }
+
+              // ---------- tabs ----------
+
+              private fun makeWebView(): WebView {
+                  val wv = WebView(this)
+                  // Each project gets its own isolated cookies / storage / cache.
+                  if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+                      try {
+                          WebViewCompat.setProfile(wv, "p_" + Integer.toHexString(project.hashCode()))
+                      } catch (e: Exception) {
+                      }
+                  }
+                  wv.setBackgroundColor(bg)
+                  wv.settings.apply {
+                      javaScriptEnabled = true
+                      domStorageEnabled = true
+                      userAgentString = userAgentString.replace("; wv", "")
+                  }
+                  CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
+                  wv.webViewClient = WebViewClient()
+                  wv.webChromeClient = WebChromeClient()
+                  return wv
+              }
+
+              private fun showTab() {
+                  val key = "$project::$site"
+                  var wv = views[key]
+                  if (wv == null) {
+                      wv = makeWebView()
+                      views[key] = wv
+                      container.addView(wv, FrameLayout.LayoutParams(MATCH, MATCH))
+                      wv.loadUrl(urlOf(site))
+                  }
+                  for ((k, v) in views) {
+                      v.visibility = if (k == key) View.VISIBLE else View.GONE
+                  }
+                  wv.requestFocus()
+                  projectBtn.text = "\u25BE  $project"
+                  refreshStrip()
+              }
+
+              private fun startKeepAlive() {
+                  if (Build.VERSION.SDK_INT >= 33) {
+                      requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+                  }
+                  startForegroundService(Intent(this, KeepAliveService::class.java))
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onBackPressed() {
+                  val w = current()
+                  if (w != null && w.canGoBack()) w.goBack() else moveTaskToBack(true)
+              }
+          }
+          EOF
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build
+        run: gradle assembleDebug --no-daemon
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: workspace-apk
+          path: app/build/outputs/apk/debug/app-debug.apk
