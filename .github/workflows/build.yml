@@ -66,8 +66,8 @@ jobs:
                   applicationId = "dev.workspace.app"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 2
-                  versionName = "0.2"
+                  versionCode = 3
+                  versionName = "0.3"
               }
               signingConfigs {
                   getByName("debug") {
@@ -185,12 +185,14 @@ jobs:
           import android.content.Intent
           import android.content.SharedPreferences
           import android.graphics.Color
+          import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
           import android.net.Uri
           import android.os.Build
           import android.os.Bundle
           import android.os.Environment
           import android.text.InputType
+          import android.text.TextUtils
           import android.view.Gravity
           import android.view.View
           import android.view.ViewGroup
@@ -205,6 +207,7 @@ jobs:
           import android.widget.FrameLayout
           import android.widget.HorizontalScrollView
           import android.widget.LinearLayout
+          import android.widget.PopupMenu
           import android.widget.ScrollView
           import android.widget.Switch
           import android.widget.TextView
@@ -226,10 +229,22 @@ jobs:
 
               private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
               private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+
               private val bg = Color.parseColor("#0f1115")
+              private val cCard = Color.parseColor("#171a21")
+              private val cStroke = Color.parseColor("#262b36")
+              private val cText = Color.parseColor("#f2f4f8")
+              private val cSub = Color.parseColor("#8b94a5")
+              private val cAccent = Color.parseColor("#3b82f6")
 
               private val DESKTOP_UA =
                   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+              private val DESKTOP_JS =
+                  "(function(){var m=document.querySelector('meta[name=viewport]');" +
+                  "if(!m){m=document.createElement('meta');m.name='viewport';" +
+                  "(document.head||document.documentElement).appendChild(m);}" +
+                  "m.setAttribute('content','width=1280');})();"
 
               private val DEFAULT_BASE = """
           You are a master of coding, app and web design, motion graphics, video editing and every skill needed to build this project. The user has NO coding experience and works only from an Android tablet.
@@ -245,12 +260,15 @@ jobs:
           """.trimIndent()
 
               private lateinit var prefs: SharedPreferences
+              private lateinit var homeHolder: FrameLayout
+              private lateinit var work: LinearLayout
               private lateinit var container: FrameLayout
-              private lateinit var projectBtn: TextView
+              private lateinit var titleView: TextView
               private lateinit var strip: LinearLayout
               private val views = HashMap<String, WebView>()
               private var project = "Default"
               private var site = "GitHub"
+              private var inHome = true
               private var fileCallback: ValueCallback<Array<Uri>>? = null
 
               override fun onCreate(savedInstanceState: Bundle?) {
@@ -262,12 +280,29 @@ jobs:
                   window.navigationBarColor = bg
                   buildUi()
                   startKeepAlive()
-                  showTab()
+                  showHome()
               }
+
+              // ---------- small helpers ----------
 
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
               private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+
+              private fun rounded(fill: Int, radius: Int, stroke: Int? = null): GradientDrawable =
+                  GradientDrawable().apply {
+                      cornerRadius = dp(radius).toFloat()
+                      setColor(fill)
+                      if (stroke != null) setStroke(dp(1), stroke)
+                  }
+
+              private fun tv(t: String, size: Float, color: Int, bold: Boolean = false): TextView =
+                  TextView(this).apply {
+                      text = t
+                      textSize = size
+                      setTextColor(color)
+                      if (bold) setTypeface(null, Typeface.BOLD)
+                  }
 
               private fun lp(w: Int, h: Int, weight: Float = 0f) =
                   LinearLayout.LayoutParams(w, h, weight).apply {
@@ -277,55 +312,207 @@ jobs:
               private fun chip(label: String, active: Boolean): TextView = TextView(this).apply {
                   this.text = label
                   textSize = 14f
+                  setSingleLine(true)
                   gravity = Gravity.CENTER_VERTICAL
-                  setTextColor(if (active) Color.WHITE else Color.parseColor("#9aa3b2"))
-                  setPadding(dp(14), dp(9), dp(14), dp(9))
-                  background = GradientDrawable().apply {
-                      cornerRadius = dp(8).toFloat()
-                      setColor(Color.parseColor(if (active) "#2a3140" else "#181b22"))
-                  }
+                  setTextColor(if (active) Color.WHITE else cSub)
+                  setPadding(dp(14), dp(10), dp(14), dp(10))
+                  background = rounded(if (active) Color.parseColor("#2a3140") else cCard, 10, cStroke)
               }
 
+              private fun icon(t: String, size: Float, onClick: (View) -> Unit): TextView =
+                  TextView(this).apply {
+                      text = t
+                      textSize = size
+                      gravity = Gravity.CENTER
+                      setTextColor(cText)
+                      minWidth = dp(48)
+                      minHeight = dp(48)
+                      setOnClickListener { onClick(it) }
+                  }
+
+              // ---------- screens ----------
+
               private fun buildUi() {
-                  val root = LinearLayout(this).apply {
+                  val root = FrameLayout(this)
+                  root.setBackgroundColor(bg)
+                  homeHolder = FrameLayout(this)
+                  work = buildWork()
+                  root.addView(homeHolder, FrameLayout.LayoutParams(MATCH, MATCH))
+                  root.addView(work, FrameLayout.LayoutParams(MATCH, MATCH))
+                  setContentView(root)
+              }
+
+              private fun buildWork(): LinearLayout {
+                  val w = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
                       setBackgroundColor(bg)
                   }
 
-                  val top = LinearLayout(this).apply {
+                  val bar = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setPadding(dp(6), dp(6), dp(6), 0)
+                      setPadding(dp(4), 0, dp(4), 0)
                   }
-                  projectBtn = chip("", true).apply { setOnClickListener { pickProject() } }
-                  top.addView(projectBtn, lp(0, WRAP, 1f))
-                  top.addView(chip("Tabs", false).apply {
-                      setOnClickListener { editTabs() }
-                  }, lp(WRAP, WRAP))
-                  top.addView(chip("Settings", false).apply {
-                      setOnClickListener { settingsDialog() }
-                  }, lp(WRAP, WRAP))
-                  top.addView(chip("Reload", false).apply {
-                      setOnClickListener { current()?.reload() }
-                  }, lp(WRAP, WRAP))
-                  top.addView(chip("+ Site", false).apply {
-                      setOnClickListener { addSite() }
-                  }, lp(WRAP, WRAP))
-                  root.addView(top, LinearLayout.LayoutParams(MATCH, WRAP))
+                  bar.addView(icon("\u2039", 30f) { showHome() })
+                  titleView = tv("", 17f, cText, true).apply {
+                      setSingleLine(true)
+                      ellipsize = TextUtils.TruncateAt.END
+                  }
+                  bar.addView(titleView, LinearLayout.LayoutParams(0, WRAP, 1f))
+                  bar.addView(icon("\u22EE", 22f) { showMenu(it) })
+                  w.addView(bar, LinearLayout.LayoutParams(MATCH, dp(52)))
 
                   strip = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
-                      setPadding(dp(6), dp(2), dp(6), dp(4))
+                      setPadding(dp(4), 0, dp(4), 0)
                   }
                   val scroll = HorizontalScrollView(this).apply {
                       isHorizontalScrollBarEnabled = false
                       addView(strip)
                   }
-                  root.addView(scroll, LinearLayout.LayoutParams(MATCH, WRAP))
+                  w.addView(scroll, LinearLayout.LayoutParams(MATCH, WRAP))
+
+                  val line = View(this).apply { setBackgroundColor(cStroke) }
+                  w.addView(line, LinearLayout.LayoutParams(MATCH, dp(1)))
 
                   container = FrameLayout(this)
-                  root.addView(container, LinearLayout.LayoutParams(MATCH, 0, 1f))
-                  setContentView(root)
+                  w.addView(container, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  return w
+              }
+
+              private fun showHome() {
+                  inHome = true
+                  homeHolder.removeAllViews()
+                  homeHolder.addView(buildHome(), FrameLayout.LayoutParams(MATCH, MATCH))
+                  homeHolder.visibility = View.VISIBLE
+                  work.visibility = View.GONE
+              }
+
+              private fun openProject(name: String) {
+                  project = name
+                  prefs.edit().putString("project", project).apply()
+                  site = prefs.getString("defaultTab", "GitHub") ?: "GitHub"
+                  inHome = false
+                  homeHolder.visibility = View.GONE
+                  work.visibility = View.VISIBLE
+                  showTab()
+              }
+
+              private fun tabsSummary(name: String): String {
+                  val all = sites()
+                  val e = enabledFor(name)
+                  val list = if (e == null) all else all.filter { it.name in e }
+                  return list.joinToString("  \u00B7  ") { it.name }
+              }
+
+              private fun buildHome(): ScrollView {
+                  val sv = ScrollView(this)
+                  sv.setBackgroundColor(bg)
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(20), dp(36), dp(20), dp(32))
+                  }
+                  col.addView(tv("Workspace", 30f, cText, true))
+                  col.addView(tv("Pick a project to continue", 14f, cSub).apply {
+                      setPadding(0, dp(4), 0, dp(28))
+                  })
+                  col.addView(tv("PROJECTS", 12f, cSub, true).apply {
+                      letterSpacing = 0.1f
+                      setPadding(0, 0, 0, dp(10))
+                  })
+
+                  for (name in projects()) {
+                      val card = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          setPadding(dp(18), dp(16), dp(18), dp(16))
+                          background = rounded(cCard, 14, cStroke)
+                          setOnClickListener { openProject(name) }
+                          setOnLongClickListener { projectOptions(name); true }
+                      }
+                      card.addView(tv(name, 18f, cText, true))
+                      card.addView(tv(tabsSummary(name), 13f, cSub).apply { setPadding(0, dp(4), 0, 0) })
+                      col.addView(card, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(10) })
+                  }
+
+                  col.addView(tv("Press and hold a project to delete it", 12f, cSub).apply {
+                      setPadding(dp(2), dp(2), 0, dp(14))
+                  })
+
+                  val newBtn = tv("+  New project", 16f, Color.WHITE, true).apply {
+                      gravity = Gravity.CENTER
+                      setPadding(dp(16), dp(16), dp(16), dp(16))
+                      background = rounded(cAccent, 14)
+                      setOnClickListener { newProject() }
+                  }
+                  col.addView(newBtn, LinearLayout.LayoutParams(MATCH, WRAP))
+
+                  val settingsBtn = tv("Settings", 15f, cText).apply {
+                      gravity = Gravity.CENTER
+                      setPadding(dp(16), dp(16), dp(16), dp(16))
+                      background = rounded(cCard, 14, cStroke)
+                      setOnClickListener { settingsDialog() }
+                  }
+                  col.addView(settingsBtn, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) })
+
+                  sv.addView(col)
+                  return sv
+              }
+
+              private fun projectOptions(name: String) {
+                  AlertDialog.Builder(this).setTitle(name)
+                      .setItems(arrayOf("Open", "Delete")) { _, i ->
+                          if (i == 0) openProject(name) else confirmDelete(name)
+                      }.show()
+              }
+
+              private fun confirmDelete(name: String) {
+                  if (projects().size <= 1) {
+                      toast("Keep at least one project")
+                      return
+                  }
+                  AlertDialog.Builder(this).setTitle("Delete $name?")
+                      .setMessage("Its tabs and settings are removed from this app.")
+                      .setPositiveButton("Delete") { _, _ ->
+                          val left = projects().filter { it != name }
+                          saveProjects(left)
+                          prefs.edit().remove("tabs_$name").remove("bp_$name").apply()
+                          val dead = views.keys.filter { it.startsWith("$name::") }
+                          for (k in dead) {
+                              views.remove(k)?.let { container.removeView(it); it.destroy() }
+                          }
+                          if (project == name) {
+                              project = left.first()
+                              prefs.edit().putString("project", project).apply()
+                          }
+                          showHome()
+                      }
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun showMenu(anchor: View) {
+                  val pm = PopupMenu(this, anchor)
+                  val m = pm.menu
+                  m.add(0, 1, 0, "Tabs")
+                  m.add(0, 2, 1, "Add site")
+                  m.add(0, 3, 2, "Reload")
+                  val d = m.add(0, 4, 3, "Desktop site")
+                  d.isCheckable = true
+                  d.isChecked = desktopMode()
+                  m.add(0, 5, 4, "Settings")
+                  pm.setOnMenuItemClickListener { item ->
+                      when (item.itemId) {
+                          1 -> editTabs()
+                          2 -> addSite()
+                          3 -> current()?.reload()
+                          4 -> {
+                              prefs.edit().putBoolean("desktop", !desktopMode()).apply()
+                              applyDesktopToAll()
+                          }
+                          5 -> settingsDialog()
+                      }
+                      true
+                  }
+                  pm.show()
               }
 
               // ---------- settings values ----------
@@ -385,20 +572,6 @@ jobs:
                   if (v.none { it.name == site }) site = v.first().name
               }
 
-              private fun pickProject() {
-                  val list = projects()
-                  val items = (list.map { if (it == project) "\u2713 $it" else it } + "+ New project").toTypedArray()
-                  AlertDialog.Builder(this).setTitle("Projects").setItems(items) { _, i ->
-                      if (i < list.size) {
-                          project = list[i]
-                          prefs.edit().putString("project", project).apply()
-                          showTab()
-                      } else {
-                          newProject()
-                      }
-                  }.show()
-              }
-
               private fun newProject() {
                   val input = EditText(this).apply { hint = "Project name" }
                   AlertDialog.Builder(this).setTitle("New project").setView(input)
@@ -422,9 +595,7 @@ jobs:
                       if (name !in list) saveProjects(list + name)
                       val tabs = templates[i].second
                       if (tabs != null) saveEnabled(name, tabs)
-                      project = name
-                      prefs.edit().putString("project", project).apply()
-                      showTab()
+                      openProject(name)
                       editTabs()
                   }.show()
               }
@@ -488,15 +659,25 @@ jobs:
               private fun refreshStrip() {
                   strip.removeAllViews()
                   for (s in visibleSites()) {
-                      val c = chip(s.name, s.name == site)
-                      c.setOnClickListener {
+                      val sel = s.name == site
+                      val item = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                      val label = tv(s.name, 15f, if (sel) cText else cSub, sel).apply {
+                          setSingleLine(true)
+                          setPadding(dp(16), dp(12), dp(16), dp(10))
+                      }
+                      val ind = View(this).apply {
+                          setBackgroundColor(if (sel) cAccent else Color.TRANSPARENT)
+                      }
+                      item.addView(label, LinearLayout.LayoutParams(WRAP, WRAP))
+                      item.addView(ind, LinearLayout.LayoutParams(MATCH, dp(3)))
+                      item.setOnClickListener {
                           site = s.name
                           showTab()
                       }
                       if (defaults.none { it.name == s.name }) {
-                          c.setOnLongClickListener { removeSite(s); true }
+                          item.setOnLongClickListener { removeSite(s); true }
                       }
-                      strip.addView(c, lp(WRAP, WRAP))
+                      strip.addView(item, LinearLayout.LayoutParams(WRAP, WRAP))
                   }
               }
 
@@ -580,8 +761,10 @@ jobs:
 
                   col.addView(label("Base prompt (every AI reads this first)"))
                   col.addView(g)
-                  col.addView(label("Extra for project: $project"))
-                  col.addView(p)
+                  if (!inHome) {
+                      col.addView(label("Extra for project: $project"))
+                      col.addView(p)
+                  }
 
                   val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
                   row.addView(chip("Copy", false).apply {
@@ -600,7 +783,7 @@ jobs:
                   }, lp(WRAP, WRAP))
                   row.addView(chip("Preview", false).apply {
                       setOnClickListener {
-                          val all = g.text.toString() + "\n\n" + p.text.toString()
+                          val all = g.text.toString() + "\n\n" + (if (inHome) "" else p.text.toString())
                           AlertDialog.Builder(this@MainActivity).setTitle("What the AI will read")
                               .setMessage(all.trim()).setPositiveButton("OK", null).show()
                       }
@@ -610,10 +793,9 @@ jobs:
                   AlertDialog.Builder(this).setTitle("Base Prompt")
                       .setView(ScrollView(this).apply { addView(col) })
                       .setPositiveButton("Save") { _, _ ->
-                          prefs.edit()
-                              .putString("basePrompt", g.text.toString())
-                              .putString("bp_$project", p.text.toString())
-                              .apply()
+                          val e = prefs.edit().putString("basePrompt", g.text.toString())
+                          if (!inHome) e.putString("bp_$project", p.text.toString())
+                          e.apply()
                           toast("Saved")
                       }
                       .setNeutralButton("Reset") { _, _ ->
@@ -638,6 +820,12 @@ jobs:
                   }
               }
 
+              private fun forceDesktop(view: WebView?) {
+                  if (view == null || !desktopMode()) return
+                  view.evaluateJavascript(DESKTOP_JS, null)
+                  view.postDelayed({ view.evaluateJavascript(DESKTOP_JS, null) }, 700)
+              }
+
               private fun makeWebView(): WebView {
                   val wv = WebView(this)
                   // Each project gets its own isolated cookies / storage / cache.
@@ -655,9 +843,20 @@ jobs:
                       userAgentString = userAgent()
                       useWideViewPort = desktopMode()
                       loadWithOverviewMode = desktopMode()
+                      setSupportZoom(true)
+                      builtInZoomControls = true
+                      displayZoomControls = false
                   }
                   CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true)
-                  wv.webViewClient = WebViewClient()
+                  wv.webViewClient = object : WebViewClient() {
+                      override fun onPageFinished(view: WebView?, url: String?) {
+                          forceDesktop(view)
+                      }
+
+                      override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
+                          forceDesktop(view)
+                      }
+                  }
                   wv.webChromeClient = object : WebChromeClient() {
                       override fun onShowFileChooser(
                           webView: WebView?,
@@ -733,7 +932,7 @@ jobs:
                       v.visibility = if (k == key) View.VISIBLE else View.GONE
                   }
                   wv.requestFocus()
-                  projectBtn.text = "\u25BE  $project"
+                  titleView.text = project
                   refreshStrip()
               }
 
@@ -746,8 +945,12 @@ jobs:
 
               @Deprecated("Deprecated in Java")
               override fun onBackPressed() {
+                  if (inHome) {
+                      moveTaskToBack(true)
+                      return
+                  }
                   val w = current()
-                  if (w != null && w.canGoBack()) w.goBack() else moveTaskToBack(true)
+                  if (w != null && w.canGoBack()) w.goBack() else showHome()
               }
           }
           EOF
