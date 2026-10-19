@@ -18,7 +18,7 @@ jobs:
 
       - name: Generate the Android project
         run: |
-          mkdir -p app/src/main/java/dev/workspace app/src/main/assets
+          mkdir -p app/src/main/java/dev/workspace app/src/main/assets app/src/main/res/drawable app/src/main/res/values app/src/main/res/mipmap-anydpi-v26
 
           cat > settings.gradle.kts <<'EOF'
           pluginManagement {
@@ -66,8 +66,8 @@ jobs:
                   applicationId = "dev.workspace.app"
                   minSdk = 26
                   targetSdk = 34
-                  versionCode = 8
-                  versionName = "0.8"
+                  versionCode = 9
+                  versionName = "0.9"
               }
               signingConfigs {
                   getByName("debug") {
@@ -96,6 +96,7 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
               <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
               <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -104,6 +105,8 @@ jobs:
                   android:maxSdkVersion="28" />
 
               <application
+                  android:icon="@mipmap/ic_launcher"
+                  android:roundIcon="@mipmap/ic_launcher_round"
                   android:label="Workspace"
                   android:usesCleartextTraffic="false"
                   android:theme="@android:style/Theme.DeviceDefault.NoActionBar">
@@ -170,6 +173,125 @@ jobs:
                   }
                   return START_STICKY
               }
+          }
+          EOF
+
+          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="108dp"
+              android:height="108dp"
+              android:viewportWidth="108"
+              android:viewportHeight="108">
+              <path
+                  android:pathData="M54,25 L79,39.5 L79,68.5 L54,83 L29,68.5 L29,39.5 Z"
+                  android:strokeColor="#9BE564"
+                  android:strokeWidth="4"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000" />
+              <path
+                  android:pathData="M41,46 L47.5,64 L54,50 L60.5,64 L67,46"
+                  android:strokeColor="#9BE564"
+                  android:strokeWidth="4.5"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000" />
+          </vector>
+          EOF
+
+          cat > app/src/main/res/drawable/logo_mark.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <vector xmlns:android="http://schemas.android.com/apk/res/android"
+              android:width="64dp"
+              android:height="64dp"
+              android:viewportWidth="64"
+              android:viewportHeight="64">
+              <path
+                  android:pathData="M32,6 L54.5,19 L54.5,45 L32,58 L9.5,45 L9.5,19 Z"
+                  android:strokeColor="#FFFFFF"
+                  android:strokeWidth="3.4"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000" />
+              <path
+                  android:pathData="M20,23 L26,41 L32,28 L38,41 L44,23"
+                  android:strokeColor="#FFFFFF"
+                  android:strokeWidth="3.8"
+                  android:strokeLineCap="round"
+                  android:strokeLineJoin="round"
+                  android:fillColor="#00000000" />
+          </vector>
+          EOF
+
+          cat > app/src/main/res/values/ic_launcher_background.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <color name="ic_launcher_background">#0B0D10</color>
+          </resources>
+          EOF
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+
+          cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml <<'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+              <background android:drawable="@color/ic_launcher_background" />
+              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+          </adaptive-icon>
+          EOF
+
+          cat > app/src/main/java/dev/workspace/Palettes.kt <<'EOF'
+          package dev.workspace
+
+          import android.content.SharedPreferences
+          import org.json.JSONObject
+
+          class Palette(
+              val id: String,
+              val label: String,
+              val light: Boolean,
+              val bg: String,
+              val card: String,
+              val stroke: String,
+              val text: String,
+              val sub: String,
+              val active: String,
+              val accent: String,
+              val onAccent: String,
+              val code: String
+          )
+
+          object Palettes {
+              val all = listOf(
+                  Palette("midnight", "Midnight", false, "#0f1115", "#171a21", "#262b36", "#f2f4f8", "#8b94a5", "#2a3140", "#3b82f6", "#ffffff", "#0b0d11"),
+                  Palette("terminal", "Terminal Lime", false, "#0a0c0b", "#0f1311", "#1f2a23", "#e8f2ea", "#7d8f83", "#1a2a1f", "#9be564", "#0a0c0b", "#070908"),
+                  Palette("ember", "Ember", false, "#100d0b", "#1a1512", "#2e2520", "#f6efe9", "#a1948a", "#2e2119", "#f97316", "#100d0b", "#0b0908"),
+                  Palette("ocean", "Ocean", false, "#0b1114", "#111a1f", "#1f2f37", "#e6f1f5", "#7e98a3", "#16303a", "#22d3ee", "#0b1114", "#081013"),
+                  Palette("rose", "Rose", false, "#120c0e", "#1b1215", "#2f2024", "#f7eaee", "#a58a93", "#33191f", "#fb7185", "#120c0e", "#0d080a"),
+                  Palette("mono", "Mono", false, "#000000", "#0d0d0d", "#262626", "#ffffff", "#8a8a8a", "#1f1f1f", "#ffffff", "#000000", "#000000"),
+                  Palette("paper", "Paper", true, "#f6f7f9", "#ffffff", "#d9dde5", "#12151a", "#5b6472", "#dbeafe", "#2563eb", "#ffffff", "#eef1f6"),
+                  Palette("mint", "Mint Light", true, "#f3f8f4", "#ffffff", "#cfe0d3", "#102016", "#52665a", "#d8f0de", "#16a34a", "#ffffff", "#e8f1ea"),
+                  Palette("sand", "Sand", true, "#faf6ef", "#fffdf8", "#e3d9c6", "#2a2316", "#7a6d55", "#f1e6cc", "#c2410c", "#ffffff", "#f3ecdc")
+              )
+
+              fun get(id: String?): Palette = all.firstOrNull { it.id == id } ?: all[0]
+
+              fun current(prefs: SharedPreferences): Palette {
+                  val id = prefs.getString("palette", null)
+                      ?: (if (prefs.getString("theme", "dark") == "light") "paper" else "midnight")
+                  return get(id)
+              }
+
+              fun json(p: Palette): String = JSONObject()
+                  .put("light", p.light).put("bg", p.bg).put("card", p.card).put("stroke", p.stroke)
+                  .put("text", p.text).put("sub", p.sub).put("active", p.active).put("accent", p.accent)
+                  .put("onAccent", p.onAccent).put("code", p.code)
+                  .toString()
           }
           EOF
 
@@ -483,7 +605,10 @@ jobs:
               }
 
               @JavascriptInterface
-              fun theme(): String = prefs.getString("theme", "dark") ?: "dark"
+              fun palette(): String = Palettes.json(Palettes.current(prefs))
+
+              @JavascriptInterface
+              fun fontStyle(): String = prefs.getString("font", "mono") ?: "mono"
 
               @JavascriptInterface
               fun fontScale(): String = (prefs.getString("fontScale", "1.0") ?: "1.0")
@@ -1288,7 +1413,7 @@ jobs:
           body{font-size:1rem}
           #app{display:flex;flex-direction:column;height:100%}
           button,select{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
-          button.pri{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+          button.pri{background:var(--acc);border-color:var(--acc);color:var(--onacc,#fff);font-weight:600}
           #top{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);font-size:12px;color:var(--sub);flex-wrap:wrap}
           #top .sp{flex:1}
           #top button{padding:5px 10px;font-size:12px}
@@ -1639,7 +1764,14 @@ jobs:
           }
 
           function init(){
-            if(N.theme() === 'light') document.documentElement.className = 'light';
+            try{
+              var P = JSON.parse(N.palette()), rs = document.documentElement.style;
+              rs.setProperty('--bg', P.bg); rs.setProperty('--card', P.card); rs.setProperty('--line', P.stroke);
+              rs.setProperty('--text', P.text); rs.setProperty('--sub', P.sub); rs.setProperty('--acc', P.accent);
+              rs.setProperty('--onacc', P.onAccent); rs.setProperty('--ubg', P.active); rs.setProperty('--cbg', P.code);
+              if(P.light) document.documentElement.className = 'light';
+            }catch(e){}
+            if(N.fontStyle() === 'mono') document.body.style.fontFamily = 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace';
             var fs = parseFloat(N.fontScale()) || 1;
             document.documentElement.style.fontSize = (15 * fs) + 'px';
 
@@ -1681,34 +1813,45 @@ jobs:
 
           import android.Manifest
           import android.app.Activity
+          import android.app.ActivityManager
           import android.app.AlertDialog
+          import android.app.DownloadManager
           import android.app.Dialog
           import android.content.BroadcastReceiver
-          import android.content.ContentValues
-          import android.content.Context
-          import android.content.IntentFilter
-          import android.app.DownloadManager
           import android.content.ClipData
           import android.content.ClipboardManager
+          import android.content.ContentValues
+          import android.content.Context
           import android.content.Intent
+          import android.content.IntentFilter
           import android.content.SharedPreferences
           import android.graphics.Color
           import android.graphics.Typeface
           import android.graphics.drawable.GradientDrawable
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
           import android.net.Uri
+          import android.os.BatteryManager
           import android.os.Build
           import android.os.Bundle
-          import android.os.Message
-          import android.provider.MediaStore
-          import android.util.Base64
-          import android.webkit.MimeTypeMap
           import android.os.Environment
+          import android.os.Message
+          import android.os.StatFs
+          import android.provider.MediaStore
+          import android.text.Editable
           import android.text.InputType
           import android.text.TextUtils
+          import android.text.TextWatcher
+          import android.util.Base64
           import android.view.Gravity
+          import android.view.KeyEvent
           import android.view.View
           import android.view.ViewGroup
+          import android.view.WindowManager
+          import android.view.inputmethod.EditorInfo
+          import android.view.inputmethod.InputMethodManager
           import android.webkit.CookieManager
+          import android.webkit.MimeTypeMap
           import android.webkit.URLUtil
           import android.webkit.ValueCallback
           import android.webkit.WebChromeClient
@@ -1719,42 +1862,54 @@ jobs:
           import android.widget.EditText
           import android.widget.FrameLayout
           import android.widget.HorizontalScrollView
+          import android.widget.ImageView
           import android.widget.LinearLayout
           import android.widget.PopupMenu
           import android.widget.ScrollView
           import android.widget.Switch
           import android.widget.TextView
           import android.widget.Toast
-          import org.json.JSONObject
           import androidx.webkit.ProfileStore
-          import androidx.webkit.WebSettingsCompat
           import androidx.webkit.WebMessageCompat
+          import androidx.webkit.WebSettingsCompat
           import androidx.webkit.WebViewCompat
           import androidx.webkit.WebViewFeature
+          import org.json.JSONArray
+          import org.json.JSONObject
+          import java.text.SimpleDateFormat
+          import java.util.Date
+          import java.util.Locale
 
           class MainActivity : Activity() {
 
               private data class Site(val name: String, val url: String)
+
+              private class Note(val id: String, val title: String, val body: String, val ts: Long, val project: String)
 
               private val defaults = listOf(
                   Site("AI Chat", "app://chat"),
                   Site("GitHub", "https://github.com"),
                   Site("Cloudflare", "https://dash.cloudflare.com"),
                   Site("Firebase", "https://console.firebase.google.com"),
-                  Site("Claude", "https://claude.ai")
+                  Site("Claude", "https://claude.ai"),
+                  Site("Browser", "app://browser")
               )
 
               private val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
               private val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
+              private val VERSION = "0.9"
 
+              private var pal: Palette = Palettes.all[0]
               private var bg = 0
               private var cCard = 0
               private var cStroke = 0
               private var cText = 0
               private var cSub = 0
               private var cActive = 0
-              private val cAccent = Color.parseColor("#3b82f6")
+              private var cAccent = 0
+              private var cOnAccent = 0
               private var fs = 1f
+              private var mono = true
 
               private val suggested = listOf(
                   Pair(Site("PWABuilder", "https://www.pwabuilder.com"), "Check and package your web app"),
@@ -1762,32 +1917,6 @@ jobs:
                   Pair(Site("AI Studio", "https://aistudio.google.com"), "Get and manage Gemini keys"),
                   Pair(Site("OpenRouter", "https://openrouter.ai"), "Free AI models and keys")
               )
-
-              private fun isLight() = prefs.getString("theme", "dark") == "light"
-
-              private fun loadTheme() {
-                  if (isLight()) {
-                      bg = Color.parseColor("#f6f7f9")
-                      cCard = Color.parseColor("#ffffff")
-                      cStroke = Color.parseColor("#d9dde5")
-                      cText = Color.parseColor("#12151a")
-                      cSub = Color.parseColor("#5b6472")
-                      cActive = Color.parseColor("#dbeafe")
-                  } else {
-                      bg = Color.parseColor("#0f1115")
-                      cCard = Color.parseColor("#171a21")
-                      cStroke = Color.parseColor("#262b36")
-                      cText = Color.parseColor("#f2f4f8")
-                      cSub = Color.parseColor("#8b94a5")
-                      cActive = Color.parseColor("#2a3140")
-                  }
-                  fs = (prefs.getString("fontScale", "1.0") ?: "1.0").toFloatOrNull() ?: 1f
-                  window.statusBarColor = bg
-                  window.navigationBarColor = bg
-                  window.decorView.systemUiVisibility =
-                      if (isLight()) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
-                      else 0
-              }
 
               private val DESKTOP_UA =
                   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -1814,27 +1943,37 @@ jobs:
               private lateinit var prefs: SharedPreferences
               private lateinit var homeHolder: FrameLayout
               private lateinit var work: LinearLayout
+              private lateinit var notesHolder: FrameLayout
+              private lateinit var settingsHolder: FrameLayout
               private lateinit var container: FrameLayout
               private lateinit var titleView: TextView
               private lateinit var strip: LinearLayout
+              private lateinit var browserBar: LinearLayout
+              private lateinit var urlField: EditText
+              private lateinit var noteTitle: EditText
+              private lateinit var noteBody: EditText
               private val views = HashMap<String, WebView>()
               private var project = "Default"
               private var site = "GitHub"
-              private var inHome = true
+              private var screen = "home"
+              private var notesFrom = "home"
+              private var notesQuery = ""
+              private var settingsFromWork = false
+              private var editing: Note? = null
               private var fileCallback: ValueCallback<Array<Uri>>? = null
 
               override fun onCreate(savedInstanceState: Bundle?) {
                   prefs = getSharedPreferences("ws", MODE_PRIVATE)
+                  pal = Palettes.current(prefs)
                   setTheme(
-                      if (isLight()) android.R.style.Theme_DeviceDefault_Light_NoActionBar
+                      if (pal.light) android.R.style.Theme_DeviceDefault_Light_NoActionBar
                       else android.R.style.Theme_DeviceDefault_NoActionBar
                   )
                   super.onCreate(savedInstanceState)
                   loadTheme()
                   project = prefs.getString("project", "Default") ?: "Default"
                   site = prefs.getString("defaultTab", "GitHub") ?: "GitHub"
-                  window.statusBarColor = bg
-                  window.navigationBarColor = bg
+
                   if (!prefs.getBoolean("mig_chat", false)) {
                       for (p in projects()) {
                           val e = enabledFor(p)
@@ -1842,6 +1981,14 @@ jobs:
                       }
                       prefs.edit().putBoolean("mig_chat", true).apply()
                   }
+                  if (!prefs.getBoolean("mig_browser", false)) {
+                      for (p in projects()) {
+                          val e = enabledFor(p)
+                          if (e != null) saveEnabled(p, e.toList() + "Browser")
+                      }
+                      prefs.edit().putBoolean("mig_browser", true).apply()
+                  }
+
                   buildUi()
                   val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
                   if (Build.VERSION.SDK_INT >= 33) {
@@ -1850,14 +1997,40 @@ jobs:
                       registerReceiver(dlReceiver, filter)
                   }
                   startKeepAlive()
-                  showHome()
+                  if (prefs.getBoolean("keepOn", false)) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+
+                  if (prefs.getBoolean("openLast", false) && projects().contains(project)) openProject(project) else showHome()
+                  if (prefs.getBoolean("reopen_settings", false)) {
+                      prefs.edit().remove("reopen_settings").apply()
+                      showSettings(false)
+                  }
               }
 
-              // ---------- small helpers ----------
+              // ---------- look and feel ----------
+
+              private fun loadTheme() {
+                  bg = Color.parseColor(pal.bg)
+                  cCard = Color.parseColor(pal.card)
+                  cStroke = Color.parseColor(pal.stroke)
+                  cText = Color.parseColor(pal.text)
+                  cSub = Color.parseColor(pal.sub)
+                  cActive = Color.parseColor(pal.active)
+                  cAccent = Color.parseColor(pal.accent)
+                  cOnAccent = Color.parseColor(pal.onAccent)
+                  fs = (prefs.getString("fontScale", "1.0") ?: "1.0").toFloatOrNull() ?: 1f
+                  mono = (prefs.getString("font", "mono") ?: "mono") == "mono"
+                  window.statusBarColor = bg
+                  window.navigationBarColor = bg
+                  window.decorView.systemUiVisibility =
+                      if (pal.light) View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR or View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR
+                      else 0
+              }
 
               private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
               private fun toast(t: String) = Toast.makeText(this, t, Toast.LENGTH_SHORT).show()
+
+              private fun face() = if (mono) Typeface.MONOSPACE else Typeface.DEFAULT
 
               private fun rounded(fill: Int, radius: Int, stroke: Int? = null): GradientDrawable =
                   GradientDrawable().apply {
@@ -1871,7 +2044,7 @@ jobs:
                       text = t
                       textSize = size * fs
                       setTextColor(color)
-                      if (bold) setTypeface(null, Typeface.BOLD)
+                      setTypeface(face(), if (bold) Typeface.BOLD else Typeface.NORMAL)
                   }
 
               private fun lp(w: Int, h: Int, weight: Float = 0f) =
@@ -1883,6 +2056,7 @@ jobs:
                   this.text = label
                   textSize = 14f * fs
                   setSingleLine(true)
+                  setTypeface(face(), Typeface.NORMAL)
                   gravity = Gravity.CENTER_VERTICAL
                   setTextColor(if (active) cText else cSub)
                   setPadding(dp(14), dp(10), dp(14), dp(10))
@@ -1900,6 +2074,15 @@ jobs:
                       setOnClickListener { onClick(it) }
                   }
 
+              private fun hideKeyboard() {
+                  try {
+                      val im = getSystemService(InputMethodManager::class.java)
+                      val v = currentFocus
+                      if (v != null) im.hideSoftInputFromWindow(v.windowToken, 0)
+                  } catch (e: Exception) {
+                  }
+              }
+
               // ---------- screens ----------
 
               private fun buildUi() {
@@ -1907,9 +2090,21 @@ jobs:
                   root.setBackgroundColor(bg)
                   homeHolder = FrameLayout(this)
                   work = buildWork()
-                  root.addView(homeHolder, FrameLayout.LayoutParams(MATCH, MATCH))
-                  root.addView(work, FrameLayout.LayoutParams(MATCH, MATCH))
+                  notesHolder = FrameLayout(this)
+                  settingsHolder = FrameLayout(this)
+                  for (v in listOf<View>(homeHolder, work, notesHolder, settingsHolder)) {
+                      root.addView(v, FrameLayout.LayoutParams(MATCH, MATCH))
+                  }
                   setContentView(root)
+              }
+
+              private fun go(s: String) {
+                  screen = s
+                  homeHolder.visibility = if (s == "home") View.VISIBLE else View.GONE
+                  work.visibility = if (s == "work") View.VISIBLE else View.GONE
+                  notesHolder.visibility = if (s == "notes" || s == "note") View.VISIBLE else View.GONE
+                  settingsHolder.visibility = if (s == "settings") View.VISIBLE else View.GONE
+                  hideKeyboard()
               }
 
               private fun buildWork(): LinearLayout {
@@ -1943,6 +2138,39 @@ jobs:
                   }
                   w.addView(scroll, LinearLayout.LayoutParams(MATCH, WRAP))
 
+                  // Address bar, only shown on the Browser tab.
+                  browserBar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(6), dp(4), dp(6), dp(6))
+                      visibility = View.GONE
+                  }
+                  browserBar.addView(icon("\u2039", 24f) { current()?.let { if (it.canGoBack()) it.goBack() } })
+                  browserBar.addView(icon("\u203A", 24f) { current()?.let { if (it.canGoForward()) it.goForward() } })
+                  urlField = EditText(this).apply {
+                      setSingleLine(true)
+                      hint = "Search or type a web address"
+                      setTextColor(cText)
+                      setHintTextColor(cSub)
+                      textSize = 14f * fs
+                      setTypeface(face(), Typeface.NORMAL)
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+                      imeOptions = EditorInfo.IME_ACTION_GO
+                      background = rounded(cCard, 10, cStroke)
+                      setPadding(dp(12), dp(8), dp(12), dp(8))
+                      setOnEditorActionListener { _, actionId, ev ->
+                          if (actionId == EditorInfo.IME_ACTION_GO || (ev != null && ev.keyCode == KeyEvent.KEYCODE_ENTER)) {
+                              goUrl()
+                              true
+                          } else {
+                              false
+                          }
+                      }
+                  }
+                  browserBar.addView(urlField, LinearLayout.LayoutParams(0, WRAP, 1f))
+                  browserBar.addView(chip("Go", true).apply { setOnClickListener { goUrl() } }, lp(WRAP, WRAP))
+                  w.addView(browserBar, LinearLayout.LayoutParams(MATCH, WRAP))
+
                   val line = View(this).apply { setBackgroundColor(cStroke) }
                   w.addView(line, LinearLayout.LayoutParams(MATCH, dp(1)))
 
@@ -1952,20 +2180,16 @@ jobs:
               }
 
               private fun showHome() {
-                  inHome = true
                   homeHolder.removeAllViews()
                   homeHolder.addView(buildHome(), FrameLayout.LayoutParams(MATCH, MATCH))
-                  homeHolder.visibility = View.VISIBLE
-                  work.visibility = View.GONE
+                  go("home")
               }
 
-              private fun openProject(name: String) {
+              private fun openProject(name: String, tab: String? = null) {
                   project = name
                   prefs.edit().putString("project", project).apply()
-                  site = prefs.getString("defaultTab", "GitHub") ?: "GitHub"
-                  inHome = false
-                  homeHolder.visibility = View.GONE
-                  work.visibility = View.VISIBLE
+                  site = tab ?: (prefs.getString("defaultTab", "GitHub") ?: "GitHub")
+                  go("work")
                   showTab()
               }
 
@@ -1976,22 +2200,125 @@ jobs:
                   return list.joinToString("  \u00B7  ") { it.name }
               }
 
+              private fun gb(b: Long) = String.format(Locale.US, "%.1f GB", b / 1073741824.0)
+
+              private fun stats(): List<Triple<String, String, String>> {
+                  var storage = "--"
+                  var ram = "--"
+                  var net = "--"
+                  var bat = "--"
+                  try {
+                      storage = gb(StatFs(Environment.getDataDirectory().path).availableBytes)
+                  } catch (e: Exception) {
+                  }
+                  try {
+                      val mi = ActivityManager.MemoryInfo()
+                      getSystemService(ActivityManager::class.java).getMemoryInfo(mi)
+                      ram = gb(mi.availMem)
+                  } catch (e: Exception) {
+                  }
+                  try {
+                      val cm = getSystemService(ConnectivityManager::class.java)
+                      val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                      net = if (caps == null) "Offline"
+                      else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) "Wi-Fi"
+                      else if (caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) "Mobile"
+                      else "Online"
+                  } catch (e: Exception) {
+                  }
+                  try {
+                      val bm = getSystemService(BatteryManager::class.java)
+                      bat = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY).toString() + "%"
+                  } catch (e: Exception) {
+                  }
+                  return listOf(
+                      Triple("STORAGE", storage, "free"),
+                      Triple("RAM", ram, "free"),
+                      Triple("NETWORK", net, "status"),
+                      Triple("BATTERY", bat, "level")
+                  )
+              }
+
+              private fun sectionLabel(t: String, top: Int = 24): TextView = tv(t, 12f, cSub, true).apply {
+                  letterSpacing = 0.12f
+                  setPadding(dp(2), dp(top), 0, dp(10))
+              }
+
               private fun buildHome(): ScrollView {
                   val sv = ScrollView(this)
                   sv.setBackgroundColor(bg)
                   val col = LinearLayout(this).apply {
                       orientation = LinearLayout.VERTICAL
-                      setPadding(dp(20), dp(36), dp(20), dp(32))
+                      setPadding(dp(18), dp(28), dp(18), dp(28))
                   }
-                  col.addView(tv("Workspace", 30f, cText, true))
-                  col.addView(tv("Pick a project to continue", 14f, cSub).apply {
-                      setPadding(0, dp(4), 0, dp(28))
-                  })
-                  col.addView(tv("PROJECTS", 12f, cSub, true).apply {
-                      letterSpacing = 0.1f
-                      setPadding(0, 0, 0, dp(10))
-                  })
 
+                  val head = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                  }
+                  val logo = ImageView(this)
+                  logo.setImageResource(R.drawable.logo_mark)
+                  logo.setColorFilter(cAccent)
+                  head.addView(logo, LinearLayout.LayoutParams(dp(44), dp(44)))
+                  head.addView(tv("WORKSPACE", 21f, cText, true).apply {
+                      letterSpacing = 0.12f
+                      setPadding(dp(12), 0, 0, 0)
+                  }, LinearLayout.LayoutParams(0, WRAP, 1f))
+                  head.addView(chip("SETTINGS", false).apply { setOnClickListener { showSettings(false) } }, LinearLayout.LayoutParams(WRAP, WRAP))
+                  col.addView(head)
+
+                  // device status tiles
+                  val statCard = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      background = rounded(cCard, 14, cStroke)
+                  }
+                  val st = stats()
+                  for ((i, s) in st.withIndex()) {
+                      val tile = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          gravity = Gravity.CENTER
+                          setPadding(dp(4), dp(14), dp(4), dp(14))
+                      }
+                      tile.addView(tv(s.first, 9f, cSub, false).apply { letterSpacing = 0.1f; gravity = Gravity.CENTER })
+                      tile.addView(tv(s.second, 13f, cText, true).apply { gravity = Gravity.CENTER; setPadding(0, dp(6), 0, dp(2)) })
+                      tile.addView(tv(s.third, 10f, cSub).apply { gravity = Gravity.CENTER })
+                      statCard.addView(tile, LinearLayout.LayoutParams(0, WRAP, 1f))
+                      if (i < st.size - 1) {
+                          statCard.addView(View(this).apply { setBackgroundColor(cStroke) }, LinearLayout.LayoutParams(dp(1), MATCH))
+                      }
+                  }
+                  col.addView(statCard, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(22) })
+
+                  // quick open
+                  col.addView(sectionLabel("QUICK OPEN"))
+                  val tiles = listOf(
+                      Triple("\u2726", "AI Chat", { openProject(project, "AI Chat") }),
+                      Triple("\u25CE", "Browser", { openProject(project, "Browser") }),
+                      Triple("\u270E", "Notes", { showNotes("home") }),
+                      Triple("</>", "GitHub", { openProject(project, "GitHub") })
+                  )
+                  var rowBox: LinearLayout? = null
+                  for ((i, t) in tiles.withIndex()) {
+                      if (i % 2 == 0) {
+                          rowBox = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                          col.addView(rowBox, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(10) })
+                      }
+                      val tile = LinearLayout(this).apply {
+                          orientation = LinearLayout.VERTICAL
+                          gravity = Gravity.CENTER
+                          setPadding(dp(8), dp(20), dp(8), dp(18))
+                          background = rounded(cCard, 14, cStroke)
+                          setOnClickListener { t.third() }
+                      }
+                      tile.addView(tv(t.first, 26f, cAccent, true).apply { gravity = Gravity.CENTER })
+                      tile.addView(tv(t.second, 14f, cText).apply { gravity = Gravity.CENTER; setPadding(0, dp(8), 0, 0) })
+                      rowBox?.addView(tile, LinearLayout.LayoutParams(0, WRAP, 1f).apply {
+                          if (i % 2 == 0) rightMargin = dp(5) else leftMargin = dp(5)
+                      })
+                  }
+
+                  // projects
+                  col.addView(sectionLabel("PROJECTS", 14))
                   for (name in projects()) {
                       val card = LinearLayout(this).apply {
                           orientation = LinearLayout.VERTICAL
@@ -2000,35 +2327,21 @@ jobs:
                           setOnClickListener { openProject(name) }
                           setOnLongClickListener { projectOptions(name); true }
                       }
-                      card.addView(tv(name, 18f, cText, true))
-                      card.addView(tv(tabsSummary(name), 13f, cSub).apply { setPadding(0, dp(4), 0, 0) })
+                      card.addView(tv(name, 17f, cText, true))
+                      card.addView(tv(tabsSummary(name), 12f, cSub).apply { setPadding(0, dp(4), 0, 0) })
                       col.addView(card, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(10) })
                   }
-
-                  col.addView(tv("Press and hold a project to delete it", 12f, cSub).apply {
+                  col.addView(tv("Press and hold a project to delete it", 11f, cSub).apply {
                       setPadding(dp(2), dp(2), 0, dp(14))
                   })
-
-                  val newBtn = tv("+  New project", 16f, Color.WHITE, true).apply {
+                  col.addView(tv("+  New project", 15f, cOnAccent, true).apply {
                       gravity = Gravity.CENTER
                       setPadding(dp(16), dp(16), dp(16), dp(16))
                       background = rounded(cAccent, 14)
                       setOnClickListener { newProject() }
-                  }
-                  col.addView(newBtn, LinearLayout.LayoutParams(MATCH, WRAP))
+                  }, LinearLayout.LayoutParams(MATCH, WRAP))
 
-                  val settingsBtn = tv("Settings", 15f, cText).apply {
-                      gravity = Gravity.CENTER
-                      setPadding(dp(16), dp(16), dp(16), dp(16))
-                      background = rounded(cCard, 14, cStroke)
-                      setOnClickListener { settingsDialog() }
-                  }
-                  col.addView(settingsBtn, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = dp(10) })
-
-                  col.addView(tv("SUGGESTED SITES", 12f, cSub, true).apply {
-                      letterSpacing = 0.1f
-                      setPadding(0, dp(28), 0, dp(10))
-                  })
+                  col.addView(sectionLabel("SUGGESTED SITES", 28))
                   for (pair in suggested) {
                       val s = pair.first
                       val added = sites().any { it.name == s.name }
@@ -2044,73 +2357,13 @@ jobs:
                               }
                           }
                       }
-                      row.addView(tv(if (added) s.name + "  \u2713 added" else "+  " + s.name, 15f, cText, true))
+                      row.addView(tv(if (added) s.name + "  \u2713 added" else "+  " + s.name, 14f, cText, true))
                       row.addView(tv(pair.second, 12f, cSub).apply { setPadding(0, dp(2), 0, 0) })
                       col.addView(row, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(8) })
                   }
 
                   sv.addView(col)
                   return sv
-              }
-
-              private fun quickSwitch() {
-                  val list = projects()
-                  val items = (list.map { if (it == project) "\u2713 $it" else it } + "Home").toTypedArray()
-                  AlertDialog.Builder(this).setTitle("Switch project").setItems(items) { _, i ->
-                      if (i < list.size) {
-                          if (list[i] != project) openProject(list[i])
-                      } else {
-                          showHome()
-                      }
-                  }.show()
-              }
-
-              private fun fontLabel(): String = when (prefs.getString("fontScale", "1.0")) {
-                  "0.9" -> "Small"
-                  "1.15" -> "Large"
-                  else -> "Normal"
-              }
-
-              private fun backupSettings() {
-                  val o = JSONObject()
-                  for ((k, v) in prefs.all) {
-                      if (k.startsWith("vault_") || k.startsWith("hist_") || k.startsWith("use_") ||
-                          k.startsWith("ex_") || k.startsWith("key") || k == "handoff_next"
-                      ) continue
-                      if (v is String || v is Boolean) o.put(k, v)
-                  }
-                  val cb = getSystemService(ClipboardManager::class.java)
-                  cb.setPrimaryClip(ClipData.newPlainText("workspace settings", o.toString()))
-                  toast("Settings copied. Paste them into a note to keep them safe.")
-              }
-
-              private fun restoreSettings(after: () -> Unit) {
-                  val cb = getSystemService(ClipboardManager::class.java)
-                  val t = cb.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
-                  val o = try {
-                      JSONObject(t)
-                  } catch (e: Exception) {
-                      null
-                  }
-                  if (o == null || !o.has("projects")) {
-                      toast("Copy your settings backup first, then tap Restore")
-                      return
-                  }
-                  AlertDialog.Builder(this).setTitle("Restore settings?")
-                      .setMessage("This replaces your projects, tabs, sites and base prompt. Keys are not included in backups, so add them again in AI Chat.")
-                      .setPositiveButton("Restore") { _, _ ->
-                          val e = prefs.edit()
-                          val it = o.keys()
-                          while (it.hasNext()) {
-                              val k = it.next()
-                              if (k.startsWith("vault_") || k.startsWith("key")) continue
-                              val v = o.get(k)
-                              if (v is String) e.putString(k, v) else if (v is Boolean) e.putBoolean(k, v)
-                          }
-                          e.apply()
-                          after()
-                      }
-                      .setNegativeButton("Cancel", null).show()
               }
 
               private fun projectOptions(name: String) {
@@ -2130,7 +2383,7 @@ jobs:
                       .setPositiveButton("Delete") { _, _ ->
                           val left = projects().filter { it != name }
                           saveProjects(left)
-                          prefs.edit().remove("tabs_$name").remove("bp_$name").apply()
+                          prefs.edit().remove("tabs_$name").remove("bp_$name").remove("hist_$name").apply()
                           val dead = views.keys.filter { it.startsWith("$name::") }
                           for (k in dead) {
                               views.remove(k)?.let { container.removeView(it); it.destroy() }
@@ -2153,7 +2406,8 @@ jobs:
                   val d = m.add(0, 4, 3, "Desktop site")
                   d.isCheckable = true
                   d.isChecked = desktopMode()
-                  m.add(0, 5, 4, "Settings")
+                  m.add(0, 5, 4, "Notes")
+                  m.add(0, 6, 5, "Settings")
                   pm.setOnMenuItemClickListener { item ->
                       when (item.itemId) {
                           1 -> editTabs()
@@ -2163,11 +2417,577 @@ jobs:
                               prefs.edit().putBoolean("desktop", !desktopMode()).apply()
                               applyDesktopToAll()
                           }
-                          5 -> settingsDialog()
+                          5 -> showNotes("work")
+                          6 -> showSettings(true)
                       }
                       true
                   }
                   pm.show()
+              }
+
+              private fun quickSwitch() {
+                  val list = projects()
+                  val items = (list.map { if (it == project) "\u2713 $it" else it } + "Home").toTypedArray()
+                  AlertDialog.Builder(this).setTitle("Switch project").setItems(items) { _, i ->
+                      if (i < list.size) {
+                          if (list[i] != project) openProject(list[i])
+                      } else {
+                          showHome()
+                      }
+                  }.show()
+              }
+
+              // ---------- browser ----------
+
+              private fun searchBase() = when (prefs.getString("search", "ddg")) {
+                  "google" -> "https://www.google.com/search?q="
+                  "bing" -> "https://www.bing.com/search?q="
+                  else -> "https://duckduckgo.com/?q="
+              }
+
+              private fun searchHome() = when (prefs.getString("search", "ddg")) {
+                  "google" -> "https://www.google.com"
+                  "bing" -> "https://www.bing.com"
+                  else -> "https://duckduckgo.com"
+              }
+
+              private fun toUrl(s: String): String {
+                  val t = s.trim()
+                  if (t.startsWith("http://") || t.startsWith("https://")) return t
+                  if (!t.contains(" ") && t.contains(".")) return "https://$t"
+                  return searchBase() + Uri.encode(t)
+              }
+
+              private fun browserHome(): String {
+                  val h = (prefs.getString("browserHome", "") ?: "").trim()
+                  return if (h.isNotEmpty()) toUrl(h) else searchHome()
+              }
+
+              private fun goUrl() {
+                  val t = urlField.text.toString().trim()
+                  if (t.isEmpty()) return
+                  hideKeyboard()
+                  urlField.clearFocus()
+                  current()?.loadUrl(toUrl(t))
+              }
+
+              // ---------- notes ----------
+
+              private fun loadNotes(): ArrayList<Note> {
+                  val out = ArrayList<Note>()
+                  try {
+                      val a = JSONArray(prefs.getString("notes", "[]"))
+                      for (i in 0 until a.length()) {
+                          val o = a.getJSONObject(i)
+                          out.add(Note(o.getString("id"), o.optString("title"), o.optString("body"), o.optLong("ts"), o.optString("project")))
+                      }
+                  } catch (e: Exception) {
+                  }
+                  return out
+              }
+
+              private fun saveNotes(list: List<Note>) {
+                  val a = JSONArray()
+                  for (n in list) {
+                      a.put(
+                          JSONObject().put("id", n.id).put("title", n.title).put("body", n.body)
+                              .put("ts", n.ts).put("project", n.project)
+                      )
+                  }
+                  prefs.edit().putString("notes", a.toString()).apply()
+              }
+
+              private fun leaveNotes() {
+                  if (notesFrom == "work") go("work") else showHome()
+              }
+
+              private fun showNotes(from: String) {
+                  notesFrom = from
+                  notesHolder.removeAllViews()
+                  val w = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(bg)
+                  }
+                  val bar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(4), 0, dp(12), 0)
+                  }
+                  bar.addView(icon("\u2039", 30f) { leaveNotes() })
+                  bar.addView(tv("Notes", 20f, cText, true), LinearLayout.LayoutParams(0, WRAP, 1f))
+                  bar.addView(chip("+ New", true).apply { setOnClickListener { showNote(null) } }, LinearLayout.LayoutParams(WRAP, WRAP))
+                  w.addView(bar, LinearLayout.LayoutParams(MATCH, dp(56)))
+
+                  val search = EditText(this).apply {
+                      hint = "Search notes"
+                      setSingleLine(true)
+                      setText(notesQuery)
+                      setTextColor(cText)
+                      setHintTextColor(cSub)
+                      textSize = 14f * fs
+                      setTypeface(face(), Typeface.NORMAL)
+                      background = rounded(cCard, 10, cStroke)
+                      setPadding(dp(14), dp(10), dp(14), dp(10))
+                  }
+                  w.addView(search, LinearLayout.LayoutParams(MATCH, WRAP).apply {
+                      setMargins(dp(14), dp(2), dp(14), dp(6))
+                  })
+
+                  val listBox = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(14), dp(6), dp(14), dp(24))
+                  }
+                  val dateFmt = SimpleDateFormat("d MMM, HH:mm", Locale.getDefault())
+
+                  fun fill() {
+                      listBox.removeAllViews()
+                      val q = notesQuery.trim().lowercase()
+                      val items = loadNotes().filter {
+                          q.isEmpty() || it.title.lowercase().contains(q) || it.body.lowercase().contains(q)
+                      }.sortedByDescending { it.ts }
+                      if (items.isEmpty()) {
+                          listBox.addView(tv(
+                              if (q.isEmpty()) "No notes yet.\nTap + New to write one." else "Nothing found.",
+                              14f, cSub
+                          ).apply { gravity = Gravity.CENTER; setPadding(0, dp(50), 0, 0) },
+                              LinearLayout.LayoutParams(MATCH, WRAP))
+                      }
+                      for (n in items) {
+                          val card = LinearLayout(this).apply {
+                              orientation = LinearLayout.VERTICAL
+                              setPadding(dp(16), dp(14), dp(16), dp(14))
+                              background = rounded(cCard, 12, cStroke)
+                              setOnClickListener { showNote(n.id) }
+                              setOnLongClickListener { confirmDeleteNote(n.id) { fill() }; true }
+                          }
+                          card.addView(tv(if (n.title.isEmpty()) "Untitled" else n.title, 15f, cText, true).apply {
+                              setSingleLine(true)
+                              ellipsize = TextUtils.TruncateAt.END
+                          })
+                          val prev = n.body.replace("\n", " ").trim()
+                          if (prev.isNotEmpty()) {
+                              card.addView(tv(prev, 13f, cSub).apply {
+                                  maxLines = 2
+                                  ellipsize = TextUtils.TruncateAt.END
+                                  setPadding(0, dp(4), 0, 0)
+                              })
+                          }
+                          val meta = (if (n.project.isNotEmpty()) n.project + "  \u00B7  " else "") + dateFmt.format(Date(n.ts))
+                          card.addView(tv(meta, 11f, cSub).apply { setPadding(0, dp(6), 0, 0) })
+                          listBox.addView(card, LinearLayout.LayoutParams(MATCH, WRAP).apply { bottomMargin = dp(8) })
+                      }
+                  }
+                  fill()
+                  search.addTextChangedListener(object : TextWatcher {
+                      override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) {}
+                      override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
+                      override fun afterTextChanged(s: Editable?) {
+                          notesQuery = s?.toString() ?: ""
+                          fill()
+                      }
+                  })
+
+                  val sv = ScrollView(this)
+                  sv.addView(listBox)
+                  w.addView(sv, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  notesHolder.addView(w, FrameLayout.LayoutParams(MATCH, MATCH))
+                  go("notes")
+              }
+
+              private fun confirmDeleteNote(id: String, after: () -> Unit) {
+                  AlertDialog.Builder(this).setTitle("Delete this note?")
+                      .setPositiveButton("Delete") { _, _ ->
+                          saveNotes(loadNotes().filter { it.id != id })
+                          after()
+                      }
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun showNote(id: String?) {
+                  val all = loadNotes()
+                  val existing = if (id == null) null else all.firstOrNull { it.id == id }
+                  val n = existing ?: Note(
+                      System.currentTimeMillis().toString(), "", "", System.currentTimeMillis(),
+                      if (notesFrom == "work") project else ""
+                  )
+                  editing = n
+                  notesHolder.removeAllViews()
+                  val w = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(bg)
+                  }
+                  val bar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(4), 0, dp(12), 0)
+                  }
+                  bar.addView(icon("\u2039", 30f) { closeNote() })
+                  bar.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
+                  bar.addView(chip("Copy", false).apply {
+                      setOnClickListener {
+                          val cb = getSystemService(ClipboardManager::class.java)
+                          val t = noteTitle.text.toString().trim()
+                          val text = if (t.isEmpty()) noteBody.text.toString() else t + "\n\n" + noteBody.text.toString()
+                          cb.setPrimaryClip(ClipData.newPlainText("note", text))
+                          toast("Copied")
+                      }
+                  }, lp(WRAP, WRAP))
+                  bar.addView(chip("Delete", false).apply {
+                      setOnClickListener {
+                          confirmDeleteNote(n.id) {
+                              editing = null
+                              showNotes(notesFrom)
+                          }
+                      }
+                  }, lp(WRAP, WRAP))
+                  w.addView(bar, LinearLayout.LayoutParams(MATCH, dp(56)))
+
+                  noteTitle = EditText(this).apply {
+                      setText(n.title)
+                      hint = "Title"
+                      setSingleLine(true)
+                      setTextColor(cText)
+                      setHintTextColor(cSub)
+                      textSize = 20f * fs
+                      setTypeface(face(), Typeface.BOLD)
+                      setBackgroundColor(Color.TRANSPARENT)
+                      setPadding(dp(18), dp(8), dp(18), dp(8))
+                  }
+                  w.addView(noteTitle, LinearLayout.LayoutParams(MATCH, WRAP))
+                  w.addView(View(this).apply { setBackgroundColor(cStroke) }, LinearLayout.LayoutParams(MATCH, dp(1)))
+
+                  noteBody = EditText(this).apply {
+                      setText(n.body)
+                      hint = "Write something..."
+                      setTextColor(cText)
+                      setHintTextColor(cSub)
+                      textSize = 15f * fs
+                      setTypeface(face(), Typeface.NORMAL)
+                      gravity = Gravity.TOP
+                      inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+                      setBackgroundColor(Color.TRANSPARENT)
+                      setPadding(dp(18), dp(14), dp(18), dp(14))
+                  }
+                  w.addView(noteBody, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  notesHolder.addView(w, FrameLayout.LayoutParams(MATCH, MATCH))
+                  go("note")
+                  if (existing == null) {
+                      noteTitle.requestFocus()
+                      val im = getSystemService(InputMethodManager::class.java)
+                      im.showSoftInput(noteTitle, InputMethodManager.SHOW_IMPLICIT)
+                  }
+              }
+
+              private fun saveCurrentNote(close: Boolean) {
+                  val n = editing ?: return
+                  if (!::noteTitle.isInitialized || !::noteBody.isInitialized) return
+                  val t = noteTitle.text.toString().trim()
+                  val b = noteBody.text.toString()
+                  val all = loadNotes()
+                  val idx = all.indexOfFirst { it.id == n.id }
+                  if (t.isEmpty() && b.isBlank()) {
+                      if (idx >= 0) all.removeAt(idx)
+                      saveNotes(all)
+                  } else {
+                      val old = if (idx >= 0) all[idx] else null
+                      if (old == null || old.title != t || old.body != b) {
+                          val updated = Note(n.id, t, b, System.currentTimeMillis(), n.project)
+                          if (idx >= 0) all[idx] = updated else all.add(updated)
+                          saveNotes(all)
+                      }
+                  }
+                  if (close) editing = null
+              }
+
+              private fun closeNote() {
+                  saveCurrentNote(true)
+                  showNotes(notesFrom)
+              }
+
+              override fun onPause() {
+                  saveCurrentNote(false)
+                  super.onPause()
+              }
+
+              // ---------- settings page ----------
+
+              private fun fontLabel(): String = when (prefs.getString("fontScale", "1.0")) {
+                  "0.9" -> "Small"
+                  "1.15" -> "Large"
+                  "1.3" -> "Extra large"
+                  else -> "Normal"
+              }
+
+              private fun restartInSettings() {
+                  prefs.edit().putBoolean("reopen_settings", true).apply()
+                  recreate()
+              }
+
+              private fun pick(title: String, labels: List<String>, current: Int, onPick: (Int) -> Unit) {
+                  val items = labels.mapIndexed { i, l -> if (i == current) "\u2713 $l" else l }.toTypedArray()
+                  AlertDialog.Builder(this).setTitle(title).setItems(items) { _, i -> onPick(i) }.show()
+              }
+
+              private fun sSection(col: LinearLayout, title: String): LinearLayout {
+                  col.addView(sectionLabel(title.uppercase(), 22))
+                  val card = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      background = rounded(cCard, 14, cStroke)
+                  }
+                  col.addView(card, LinearLayout.LayoutParams(MATCH, WRAP))
+                  return card
+              }
+
+              private fun sDivider(card: LinearLayout) {
+                  if (card.childCount > 0) {
+                      card.addView(View(this).apply { setBackgroundColor(cStroke) }, LinearLayout.LayoutParams(MATCH, dp(1)))
+                  }
+              }
+
+              private fun sRow(card: LinearLayout, title: String, sub: String?, value: String?, onClick: () -> Unit): TextView {
+                  sDivider(card)
+                  val r = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(16), dp(14), dp(16), dp(14))
+                      setOnClickListener { onClick() }
+                  }
+                  val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  left.addView(tv(title, 15f, cText))
+                  if (sub != null) left.addView(tv(sub, 12f, cSub).apply { setPadding(0, dp(2), 0, 0) })
+                  r.addView(left, LinearLayout.LayoutParams(0, WRAP, 1f))
+                  val v = tv(value ?: "\u203A", 13f, cSub)
+                  v.setPadding(dp(10), 0, 0, 0)
+                  r.addView(v)
+                  card.addView(r, LinearLayout.LayoutParams(MATCH, WRAP))
+                  return v
+              }
+
+              private fun sToggle(
+                  card: LinearLayout, title: String, sub: String?, key: String, def: Boolean, onChange: (Boolean) -> Unit
+              ) {
+                  sDivider(card)
+                  val r = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(16), dp(12), dp(16), dp(12))
+                  }
+                  val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                  left.addView(tv(title, 15f, cText))
+                  if (sub != null) left.addView(tv(sub, 12f, cSub).apply { setPadding(0, dp(2), 0, 0) })
+                  r.addView(left, LinearLayout.LayoutParams(0, WRAP, 1f))
+                  val sw = Switch(this)
+                  sw.isChecked = prefs.getBoolean(key, def)
+                  sw.setOnCheckedChangeListener { _, c ->
+                      prefs.edit().putBoolean(key, c).apply()
+                      onChange(c)
+                  }
+                  r.addView(sw)
+                  r.setOnClickListener { sw.toggle() }
+                  card.addView(r, LinearLayout.LayoutParams(MATCH, WRAP))
+              }
+
+              private fun showSettings(fromWork: Boolean) {
+                  settingsFromWork = fromWork
+                  settingsHolder.removeAllViews()
+                  val w = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setBackgroundColor(bg)
+                  }
+                  val bar = LinearLayout(this).apply {
+                      orientation = LinearLayout.HORIZONTAL
+                      gravity = Gravity.CENTER_VERTICAL
+                      setPadding(dp(4), 0, dp(12), 0)
+                  }
+                  bar.addView(icon("\u2039", 30f) { closeSettings() })
+                  bar.addView(tv("Settings", 20f, cText, true), LinearLayout.LayoutParams(0, WRAP, 1f))
+                  w.addView(bar, LinearLayout.LayoutParams(MATCH, dp(56)))
+
+                  val col = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(16), dp(0), dp(16), dp(32))
+                  }
+
+                  // Appearance
+                  val a = sSection(col, "Appearance")
+                  sRow(a, "Colour theme", "Pick a palette for the whole app", pal.label) { pickPalette() }
+                  sRow(a, "Text size", null, fontLabel()) {
+                      val vals = listOf("0.9", "1.0", "1.15", "1.3")
+                      val cur = vals.indexOf(prefs.getString("fontScale", "1.0") ?: "1.0")
+                      pick("Text size", listOf("Small", "Normal", "Large", "Extra large"), cur) { i ->
+                          prefs.edit().putString("fontScale", vals[i]).apply()
+                          restartInSettings()
+                      }
+                  }
+                  sRow(a, "Font style", null, if (mono) "Monospace" else "System") {
+                      pick("Font style", listOf("Monospace", "System"), if (mono) 0 else 1) { i ->
+                          prefs.edit().putString("font", if (i == 0) "mono" else "system").apply()
+                          restartInSettings()
+                      }
+                  }
+                  sToggle(a, "Keep screen on", "Stops the screen from turning off while the app is open", "keepOn", false) { on ->
+                      if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                      else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                  }
+
+                  // Browser
+                  val b = sSection(col, "Browser")
+                  val engines = listOf("DuckDuckGo", "Google", "Bing")
+                  val engineIds = listOf("ddg", "google", "bing")
+                  val engVal = sRow(b, "Search engine", null, engines[Math.max(0, engineIds.indexOf(prefs.getString("search", "ddg")))]) { }
+                  engVal.parent?.let { (it as View).setOnClickListener {
+                      val cur = Math.max(0, engineIds.indexOf(prefs.getString("search", "ddg")))
+                      pick("Search engine", engines, cur) { i ->
+                          prefs.edit().putString("search", engineIds[i]).apply()
+                          engVal.text = engines[i]
+                      }
+                  } }
+                  val homeVal = sRow(b, "Browser home page", "Leave empty to use the search engine", (prefs.getString("browserHome", "") ?: "").ifEmpty { "Default" }) { }
+                  homeVal.parent?.let { (it as View).setOnClickListener {
+                      val input = EditText(this).apply {
+                          hint = "example.com"
+                          setText(prefs.getString("browserHome", "") ?: "")
+                          inputType = InputType.TYPE_TEXT_VARIATION_URI
+                      }
+                      AlertDialog.Builder(this).setTitle("Browser home page").setView(input)
+                          .setPositiveButton("Save") { _, _ ->
+                              val t = input.text.toString().trim()
+                              prefs.edit().putString("browserHome", t).apply()
+                              homeVal.text = if (t.isEmpty()) "Default" else t
+                          }
+                          .setNegativeButton("Cancel", null).show()
+                  } }
+                  sToggle(b, "Desktop site", "Ask websites for their desktop version", "desktop", false) { applyDesktopToAll() }
+
+                  // Tabs and start
+                  val t = sSection(col, "Tabs and start")
+                  sToggle(t, "Keep tabs alive", "Do not reload a tab when you switch away and back", "keepAlive", true) { }
+                  val defVal = sRow(t, "Default tab", "The tab that opens first in a project", prefs.getString("defaultTab", "GitHub") ?: "GitHub") { }
+                  defVal.parent?.let { (it as View).setOnClickListener {
+                      val names = sites().map { s -> s.name }
+                      val cur = Math.max(0, names.indexOf(prefs.getString("defaultTab", "GitHub")))
+                      pick("Default tab", names, cur) { i ->
+                          prefs.edit().putString("defaultTab", names[i]).apply()
+                          defVal.text = names[i]
+                      }
+                  } }
+                  sToggle(t, "Open last project on launch", "Skip the home screen when the app starts", "openLast", false) { }
+
+                  // AI chat
+                  val c = sSection(col, "AI Chat")
+                  sRow(c, "Base prompt", "Rules every AI reads first", null) { baseDialog() }
+                  sToggle(c, "Switch keys automatically", "Move to your next key when one hits its limit", "autoContinue", false) { }
+                  sRow(c, "Clear all chat history", "Removes saved chats from every project", null) {
+                      AlertDialog.Builder(this).setTitle("Clear all chat history?")
+                          .setMessage("Your notes, keys and projects are not touched.")
+                          .setPositiveButton("Clear") { _, _ ->
+                              val e = prefs.edit()
+                              for (k in prefs.all.keys) if (k.startsWith("hist_")) e.remove(k)
+                              e.apply()
+                              val dead = views.keys.filter { it.endsWith("::AI Chat") }
+                              for (k in dead) {
+                                  views.remove(k)?.let { v -> container.removeView(v); v.destroy() }
+                              }
+                              toast("Chat history cleared")
+                          }
+                          .setNegativeButton("Cancel", null).show()
+                  }
+
+                  // Data
+                  val d = sSection(col, "Data")
+                  sRow(d, "Back up settings", "Copies projects, tabs, notes and base prompt", null) { backupSettings() }
+                  sRow(d, "Restore settings", "Reads a backup you copied earlier", null) {
+                      restoreSettings { restartInSettings() }
+                  }
+
+                  // About
+                  val ab = sSection(col, "About")
+                  sRow(ab, "Workspace", "Version $VERSION", null) { }
+                  sRow(ab, "Keys and privacy", "Keys are encrypted on this device and never go into backups", null) { }
+
+                  val sv = ScrollView(this)
+                  sv.addView(col)
+                  w.addView(sv, LinearLayout.LayoutParams(MATCH, 0, 1f))
+                  settingsHolder.addView(w, FrameLayout.LayoutParams(MATCH, MATCH))
+                  go("settings")
+              }
+
+              private fun closeSettings() {
+                  if (settingsFromWork) go("work") else showHome()
+              }
+
+              private fun pickPalette() {
+                  val box = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      setPadding(dp(12), dp(8), dp(12), dp(8))
+                  }
+                  var dlg: AlertDialog? = null
+                  for (p in Palettes.all) {
+                      val row = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          gravity = Gravity.CENTER_VERTICAL
+                          setPadding(dp(8), dp(10), dp(8), dp(10))
+                          setOnClickListener {
+                              prefs.edit().putString("palette", p.id).apply()
+                              dlg?.dismiss()
+                              restartInSettings()
+                          }
+                      }
+                      for (cc in listOf(p.bg, p.card, p.accent)) {
+                          val sw = View(this)
+                          sw.background = rounded(Color.parseColor(cc), 6, cSub)
+                          row.addView(sw, LinearLayout.LayoutParams(dp(26), dp(26)).apply { rightMargin = dp(6) })
+                      }
+                      row.addView(tv(p.label + (if (p.id == pal.id) "   \u2713" else ""), 15f, cText).apply {
+                          setPadding(dp(10), 0, 0, 0)
+                      })
+                      box.addView(row, LinearLayout.LayoutParams(MATCH, WRAP))
+                  }
+                  dlg = AlertDialog.Builder(this).setTitle("Colour theme")
+                      .setView(ScrollView(this).apply { addView(box) })
+                      .setNegativeButton("Cancel", null).show()
+              }
+
+              private fun backupSettings() {
+                  val o = JSONObject()
+                  for ((k, v) in prefs.all) {
+                      if (k.startsWith("vault_") || k.startsWith("hist_") || k.startsWith("use_") ||
+                          k.startsWith("ex_") || k.startsWith("key") || k == "handoff_next" || k == "reopen_settings"
+                      ) continue
+                      if (v is String || v is Boolean) o.put(k, v)
+                  }
+                  val cb = getSystemService(ClipboardManager::class.java)
+                  cb.setPrimaryClip(ClipData.newPlainText("workspace settings", o.toString()))
+                  toast("Settings copied. Paste them into a note to keep them safe.")
+              }
+
+              private fun restoreSettings(after: () -> Unit) {
+                  val cb = getSystemService(ClipboardManager::class.java)
+                  val t = cb.primaryClip?.getItemAt(0)?.coerceToText(this)?.toString() ?: ""
+                  val o = try {
+                      JSONObject(t)
+                  } catch (e: Exception) {
+                      null
+                  }
+                  if (o == null || !o.has("projects")) {
+                      toast("Copy your settings backup first, then tap Restore")
+                      return
+                  }
+                  AlertDialog.Builder(this).setTitle("Restore settings?")
+                      .setMessage("This replaces your projects, tabs, notes, sites and base prompt. Keys are not included in backups, so add them again in AI Chat.")
+                      .setPositiveButton("Restore") { _, _ ->
+                          val e = prefs.edit()
+                          val keys = o.keys()
+                          while (keys.hasNext()) {
+                              val k = keys.next()
+                              if (k.startsWith("vault_") || k.startsWith("key")) continue
+                              val v = o.get(k)
+                              if (v is String) e.putString(k, v) else if (v is Boolean) e.putBoolean(k, v)
+                          }
+                          e.apply()
+                          after()
+                      }
+                      .setNegativeButton("Cancel", null).show()
               }
 
               // ---------- settings values ----------
@@ -2199,8 +3019,10 @@ jobs:
 
               private fun sites(): List<Site> = defaults + customSites()
 
-              private fun urlOf(name: String) =
-                  sites().firstOrNull { it.name == name }?.url ?: "https://github.com"
+              private fun urlOf(name: String): String {
+                  if (name == "Browser") return browserHome()
+                  return sites().firstOrNull { it.name == name }?.url ?: "https://github.com"
+              }
 
               private fun current(): WebView? = views["$project::$site"]
 
@@ -2239,9 +3061,9 @@ jobs:
 
               private fun pickTemplate(name: String) {
                   val templates = listOf<Pair<String, List<String>?>>(
-                      Pair("Web app", listOf("AI Chat", "GitHub", "Cloudflare", "Claude")),
-                      Pair("Game", listOf("AI Chat", "GitHub", "Claude")),
-                      Pair("Store", listOf("AI Chat", "GitHub", "Cloudflare", "Firebase", "Claude")),
+                      Pair("Web app", listOf("AI Chat", "GitHub", "Cloudflare", "Claude", "Browser")),
+                      Pair("Game", listOf("AI Chat", "GitHub", "Claude", "Browser")),
+                      Pair("Store", listOf("AI Chat", "GitHub", "Cloudflare", "Firebase", "Claude", "Browser")),
                       Pair("Blank (all tabs)", null)
                   )
                   val labels = templates.map { it.first }.toTypedArray()
@@ -2336,84 +3158,6 @@ jobs:
                   }
               }
 
-              // ---------- settings screen ----------
-
-              private fun settingsDialog() {
-                  val col = LinearLayout(this).apply {
-                      orientation = LinearLayout.VERTICAL
-                      setPadding(dp(20), dp(12), dp(20), dp(4))
-                  }
-
-                  fun toggle(label: String, key: String, def: Boolean, onChange: () -> Unit) {
-                      val sw = Switch(this)
-                      sw.text = label
-                      sw.isChecked = prefs.getBoolean(key, def)
-                      sw.setPadding(0, dp(10), 0, dp(10))
-                      sw.setOnCheckedChangeListener { _, c ->
-                          prefs.edit().putBoolean(key, c).apply()
-                          onChange()
-                      }
-                      col.addView(sw, LinearLayout.LayoutParams(MATCH, WRAP))
-                  }
-
-                  toggle("Keep tabs alive (no reload when switching)", "keepAlive", true) { }
-                  toggle("Desktop site", "desktop", false) { applyDesktopToAll() }
-
-                  var dlg: AlertDialog? = null
-
-                  val themeBtn = chip("Theme: " + (if (isLight()) "Light" else "Dark"), false)
-                  themeBtn.setOnClickListener {
-                      prefs.edit().putString("theme", if (isLight()) "dark" else "light").apply()
-                      dlg?.dismiss()
-                      recreate()
-                  }
-                  col.addView(themeBtn, lp(WRAP, WRAP))
-
-                  val fontBtn = chip("Text size: " + fontLabel(), false)
-                  fontBtn.setOnClickListener {
-                      val next = when (prefs.getString("fontScale", "1.0")) {
-                          "0.9" -> "1.0"
-                          "1.0" -> "1.15"
-                          else -> "0.9"
-                      }
-                      prefs.edit().putString("fontScale", next).apply()
-                      dlg?.dismiss()
-                      recreate()
-                  }
-                  col.addView(fontBtn, lp(WRAP, WRAP))
-
-                  val defBtn = chip("Default tab: " + (prefs.getString("defaultTab", "GitHub") ?: "GitHub"), false)
-                  defBtn.setOnClickListener {
-                      val all = sites()
-                      val names = all.map { it.name }.toTypedArray()
-                      AlertDialog.Builder(this).setTitle("Default tab on open").setItems(names) { _, i ->
-                          prefs.edit().putString("defaultTab", names[i]).apply()
-                          defBtn.text = "Default tab: " + names[i]
-                      }.show()
-                  }
-                  col.addView(defBtn, lp(WRAP, WRAP))
-
-                  val bpBtn = chip("Base Prompt", false)
-                  bpBtn.setOnClickListener { baseDialog() }
-                  col.addView(bpBtn, lp(WRAP, WRAP))
-
-                  val backBtn = chip("Back up settings (copy)", false)
-                  backBtn.setOnClickListener { backupSettings() }
-                  col.addView(backBtn, lp(WRAP, WRAP))
-
-                  val restBtn = chip("Restore settings (from copy)", false)
-                  restBtn.setOnClickListener {
-                      restoreSettings {
-                          dlg?.dismiss()
-                          recreate()
-                      }
-                  }
-                  col.addView(restBtn, lp(WRAP, WRAP))
-
-                  dlg = AlertDialog.Builder(this).setTitle("Settings").setView(ScrollView(this).apply { addView(col) })
-                      .setPositiveButton("Close", null).show()
-              }
-
               private fun applyDesktopToAll() {
                   val d = desktopMode()
                   for (v in views.values) {
@@ -2453,7 +3197,7 @@ jobs:
 
                   col.addView(label("Base prompt (every AI reads this first)"))
                   col.addView(g)
-                  if (!inHome) {
+                  if (settingsFromWork) {
                       col.addView(label("Extra for project: $project"))
                       col.addView(p)
                   }
@@ -2475,7 +3219,7 @@ jobs:
                   }, lp(WRAP, WRAP))
                   row.addView(chip("Preview", false).apply {
                       setOnClickListener {
-                          val all = g.text.toString() + "\n\n" + (if (inHome) "" else p.text.toString())
+                          val all = g.text.toString() + "\n\n" + (if (settingsFromWork) p.text.toString() else "")
                           AlertDialog.Builder(this@MainActivity).setTitle("What the AI will read")
                               .setMessage(all.trim()).setPositiveButton("OK", null).show()
                       }
@@ -2486,7 +3230,7 @@ jobs:
                       .setView(ScrollView(this).apply { addView(col) })
                       .setPositiveButton("Save") { _, _ ->
                           val e = prefs.edit().putString("basePrompt", g.text.toString())
-                          if (!inHome) e.putString("bp_$project", p.text.toString())
+                          if (settingsFromWork) e.putString("bp_$project", p.text.toString())
                           e.apply()
                           toast("Saved")
                       }
@@ -2497,27 +3241,7 @@ jobs:
                       .setNegativeButton("Cancel", null).show()
               }
 
-              // ---------- tabs ----------
-
-              private fun cookiesFor(url: String): String {
-                  return try {
-                      val cm = if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
-                          ProfileStore.getInstance().getOrCreateProfile(profileName()).cookieManager
-                      } else {
-                          CookieManager.getInstance()
-                      }
-                      cm.getCookie(url) ?: ""
-                  } catch (e: Exception) {
-                      ""
-                  }
-              }
-
-              private fun forceDesktop(view: WebView?) {
-                  if (view == null || !desktopMode()) return
-                  if (view.url?.startsWith("file:") == true) return
-                  view.evaluateJavascript(DESKTOP_JS, null)
-                  view.postDelayed({ view.evaluateJavascript(DESKTOP_JS, null) }, 700)
-              }
+              // ---------- downloads ----------
 
               private val dlUrls = HashMap<Long, String>()
 
@@ -2595,6 +3319,8 @@ jobs:
                   }
               }
 
+              // ---------- tabs ----------
+
               // Sign-in pages (like "Continue with Google") open a pop-up window.
               private fun makePopup(): WebView {
                   val p = WebView(this)
@@ -2619,6 +3345,26 @@ jobs:
                   CookieManager.getInstance().setAcceptThirdPartyCookies(p, true)
                   p.webViewClient = WebViewClient()
                   return p
+              }
+
+              private fun cookiesFor(url: String): String {
+                  return try {
+                      val cm = if (WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
+                          ProfileStore.getInstance().getOrCreateProfile(profileName()).cookieManager
+                      } else {
+                          CookieManager.getInstance()
+                      }
+                      cm.getCookie(url) ?: ""
+                  } catch (e: Exception) {
+                      ""
+                  }
+              }
+
+              private fun forceDesktop(view: WebView?) {
+                  if (view == null || !desktopMode()) return
+                  if (view.url?.startsWith("file:") == true) return
+                  view.evaluateJavascript(DESKTOP_JS, null)
+                  view.postDelayed({ view.evaluateJavascript(DESKTOP_JS, null) }, 700)
               }
 
               private fun makeWebView(chat: Boolean): WebView {
@@ -2658,6 +3404,9 @@ jobs:
 
                       override fun doUpdateVisitedHistory(view: WebView?, url: String?, isReload: Boolean) {
                           forceDesktop(view)
+                          if (view != null && view === current() && site == "Browser" && url != null && !urlField.hasFocus()) {
+                              urlField.setText(url)
+                          }
                       }
                   }
                   if (chat) {
@@ -2793,6 +3542,11 @@ jobs:
                   }
                   wv.requestFocus()
                   titleView.text = project
+                  browserBar.visibility = if (site == "Browser") View.VISIBLE else View.GONE
+                  if (site == "Browser") {
+                      val u = wv.url
+                      urlField.setText(u ?: "")
+                  }
                   refreshStrip()
               }
 
@@ -2813,12 +3567,17 @@ jobs:
 
               @Deprecated("Deprecated in Java")
               override fun onBackPressed() {
-                  if (inHome) {
-                      moveTaskToBack(true)
-                      return
+                  when (screen) {
+                      "home" -> moveTaskToBack(true)
+                      "work" -> {
+                          val w = current()
+                          if (w != null && w.canGoBack()) w.goBack() else showHome()
+                      }
+                      "notes" -> leaveNotes()
+                      "note" -> closeNote()
+                      "settings" -> closeSettings()
+                      else -> moveTaskToBack(true)
                   }
-                  val w = current()
-                  if (w != null && w.canGoBack()) w.goBack() else showHome()
               }
           }
           EOF
